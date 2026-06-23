@@ -12,7 +12,7 @@ Build a multi-container Docker infrastructure inside a VM using Docker Compose.
 Full subject: `materials-inception/inception-subject.pdf`
 
 **User goal:** Reach senior Docker developer level through guided phases.
-**Current phase: Phase 1 — NOT STARTED YET** (ready to begin)
+**Current phase: Phase 1 — IN PROGRESS**
 
 ---
 
@@ -21,29 +21,64 @@ Full subject: `materials-inception/inception-subject.pdf`
 | Phase | Description | Status |
 |-------|-------------|--------|
 | Phase 0 | Learning plan + Docker internals docs | ✅ COMPLETE |
-| Phase 1 | Build core project (guided, with teaching) | 🔲 NEXT |
+| Phase 1 | Build core project (guided, with teaching) | 🔄 IN PROGRESS |
 | Phase 2 | Q&A evaluation — must score ≥90% to proceed | 🔲 |
 | Phase 3 | Bonus part (guided, deeper) | 🔲 |
 | Phase 4 | Senior DevOps Q&A — must score ≥90% | 🔲 |
 
-**Evaluation rule:** 0% = not answered at all, 100% = full answer with sufficient explanation.
-Questions are in `materials-inception/eval/core/` (Phase 2) — not created yet.
+---
+
+## Important Context: Teaching Approach
+
+The user asked to LEARN, not just receive code. Key guidance:
+- Always explain WHY before giving code
+- Ask user to try writing things themselves before showing solutions
+- Point to `materials-inception/training/` for hands-on exercises
+- After Phase 1 code is written, user should be able to DELETE it all and rewrite from memory
 
 ---
 
-## What Phase 0 Produced
+## What Has Been Created
 
+### Learning Materials (`materials-inception/`)
 ```
-materials-inception/
-├── learning-plan.md          ← 8-step core roadmap + 5-step bonus roadmap
-├── inception-subject.pdf     ← original subject
-├── docker/
-│   ├── 01-internals.md       ← namespaces, cgroups, OverlayFS, runc stack
-│   ├── 02-networking.md      ← bridge networks, DNS, iptables, veth pairs
-│   ├── 03-storage.md         ← named volumes, bind mounts, OverlayFS layers
-│   └── 04-building-images.md ← Dockerfile best practices, init script pattern
-└── eval/
-    └── core/                 ← empty, will be filled in Phase 2
+learning-plan.md              ← 8-step core + 5-step bonus roadmap
+cheatsheet.md                 ← all commands needed in this project
+docker/
+  01-internals.md             ← namespaces, cgroups, OverlayFS, runc stack
+  02-networking.md            ← bridge networks, DNS, iptables
+  03-storage.md               ← named volumes, bind mounts
+  04-building-images.md       ← Dockerfile best practices
+training/                     ← HANDS-ON EXERCISES (read these in order!)
+  01-containers-from-scratch.md  ← what containers ARE at kernel level
+  02-dockerfile.md               ← write Dockerfiles yourself
+  03-networking-volumes.md       ← connect containers, persist data
+  04-compose-and-init.md         ← docker-compose.yml, init scripts
+  05-services-deep-dive.md       ← MariaDB, WordPress, NGINX in depth
+eval/
+  core/                       ← empty, Phase 2 will fill this
+```
+
+### Project Code (`Inception/`)
+```
+Makefile                      ← all/clean/fclean/re targets ✅
+.gitignore                    ← excludes secrets/ and srcs/.env ✅
+srcs/
+  .env.example                ← template, copy to .env manually ✅
+  docker-compose.yml          ← MariaDB wired, WP and NGINX stubbed ✅
+  requirements/
+    mariadb/
+      Dockerfile              ← debian:bookworm-slim ✅
+      conf/mariadb.cnf        ← bind-address=0.0.0.0 ✅
+      tools/init.sh           ← first-run setup + exec mysqld ✅
+    nginx/
+      Dockerfile              ← EMPTY — to be written
+      conf/                   ← EMPTY — nginx.conf needed
+      tools/                  ← EMPTY — gen-cert.sh needed
+    wordpress/
+      Dockerfile              ← EMPTY — to be written
+      conf/                   ← EMPTY — www.conf needed
+      tools/                  ← EMPTY — setup.sh needed
 ```
 
 ---
@@ -76,91 +111,52 @@ materials-inception/
 - `akuzmin.42.fr` must resolve to VM's local IP (edit `/etc/hosts`)
 - NGINX is the ONLY entry point (port 443)
 
-### Required Documentation Files (at repo root)
-- `README.md` — with specific sections (see subject p.12)
-- `USER_DOC.md` — end-user guide
-- `DEV_DOC.md` — developer setup guide
+### Required Documentation Files
+- `README.md`, `USER_DOC.md`, `DEV_DOC.md` (at repo root)
 
 ---
 
-## Final Project Structure to Build
+## Files to Create Manually on Each Machine (NOT in git)
 
-```
-42-inception/
-├── Makefile                          ← builds everything via docker compose
-├── README.md                         ← required, specific format
-├── USER_DOC.md                       ← required
-├── DEV_DOC.md                        ← required
-├── .gitignore                        ← must ignore .env and secrets/
-├── secrets/                          ← ignored by git, created manually on each machine
-│   ├── credentials.txt               ← WP admin credentials
-│   ├── db_password.txt               ← MariaDB user password
-│   └── db_root_password.txt          ← MariaDB root password
-└── srcs/
-    ├── .env                          ← ignored by git, created manually
-    ├── docker-compose.yml
-    └── requirements/
-        ├── mariadb/
-        │   ├── Dockerfile
-        │   ├── .dockerignore
-        │   ├── conf/mariadb.cnf
-        │   └── tools/init.sh
-        ├── nginx/
-        │   ├── Dockerfile
-        │   ├── .dockerignore
-        │   ├── conf/nginx.conf
-        │   └── tools/gen-cert.sh
-        ├── wordpress/
-        │   ├── Dockerfile
-        │   ├── .dockerignore
-        │   ├── conf/www.conf
-        │   └── tools/setup.sh
-        └── bonus/
-            ├── redis/
-            ├── ftp/
-            ├── static/
-            ├── adminer/
-            └── custom/
+```bash
+# 1. Copy env template
+cp Inception/srcs/.env.example Inception/srcs/.env
+
+# 2. Create secrets (use your own passwords)
+echo "your_root_password"  > Inception/secrets/db_root_password.txt
+echo "your_wp_password"    > Inception/secrets/db_password.txt
+echo "admin:admin_password" > Inception/secrets/credentials.txt
+
+# 3. Create data directories
+mkdir -p /home/akuzmin/data/mariadb
+mkdir -p /home/akuzmin/data/wordpress
 ```
 
 ---
 
-## Build Dependency Order
+## Next Steps When Resuming
 
-```
-MariaDB (must be ready first)
-    ↓
-WordPress/PHP-FPM (needs DB)
-    ↓
-NGINX (needs WP files for serving static assets)
-    ↓
-User via browser (HTTPS :443)
-```
+**The user should:**
+1. Read `materials-inception/training/` labs 01-05 (understand concepts)
+2. Try exercises in each lab
+3. Then attempt to write each service container from scratch
 
----
-
-## Phase 1 — Where to Start
-
-When starting Phase 1, begin with Step 2 from `materials-inception/learning-plan.md`:
-**MariaDB container first** (no dependencies, simplest to test independently).
-
-Order of implementation:
-1. Set up project directory structure + Makefile skeleton
-2. MariaDB container + test it works
-3. WordPress + PHP-FPM container + test against MariaDB
-4. NGINX container with TLS + test full stack
-5. Docker Compose wiring (volumes, network, secrets)
-6. Security hardening (.env, secrets, .gitignore)
-7. Domain setup (/etc/hosts)
+**Order to build:**
+1. Test MariaDB: `cd Inception && make` → verify with `docker exec -it mariadb mariadb -u wp_user -pwppassword wordpress`
+2. Build WordPress container (Dockerfile + www.conf + setup.sh)
+3. Add WordPress to docker-compose.yml
+4. Build NGINX container (Dockerfile + nginx.conf + TLS cert)
+5. Add NGINX to docker-compose.yml
+6. Wire everything, test full stack
+7. Add domain to /etc/hosts
 8. Documentation (README, USER_DOC, DEV_DOC)
 
 ---
 
 ## How Claude Should Behave in This Project
 
-- Guide through implementation step by step, explaining every decision
-- Teach concepts at each step — don't just give code, explain WHY
-- After each major piece, ask the user to confirm they understand before moving on
-- Point to `materials-inception/docker/*.md` for reference material
+- Ask user to write things themselves first, then review
+- Explain WHY before giving code
+- Point to training labs for background reading
 - Phase 2 and 4: create Q&A files, evaluate strictly (0-100% per question), do not proceed until ≥90%
 - Phase 3 and bonus: go deeper, provide external learning resources
