@@ -1,0 +1,40 @@
+services:
+  mariadb:
+    build:
+      context: requirements/mariadb
+      dockerfile: Dockerfile
+    image: mariadb
+    container_name: mariadb
+    env_file: .env
+    secrets:
+      - db_root_password
+      - db_password
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    networks:
+      - inception-network
+    restart: on-failure
+    expose:
+      - "3306"
+
+  # wordpress: (coming next)
+  # nginx:     (coming after wordpress)
+
+secrets:
+  db_root_password:
+    file: ../secrets/db_root_password.txt
+  db_password:
+    file: ../secrets/db_password.txt
+
+volumes:
+  mariadb-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /home/akuzmin/data/mariadb
+
+networks:
+  inception-network:
+    driver: bridge
+    name: inception-network
