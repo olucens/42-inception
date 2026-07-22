@@ -1,0 +1,13 @@
+name: inception-rules
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  check-rules:
+    runs-on: debian-bookworm-slim
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/check_inception_rules.sh
