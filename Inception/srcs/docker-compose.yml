@@ -3,7 +3,7 @@ services:
     build:
       context: requirements/mariadb
       dockerfile: Dockerfile
-    image: mariadb
+    image: mariadb:inception
     container_name: mariadb
     env_file: .env
     secrets:
