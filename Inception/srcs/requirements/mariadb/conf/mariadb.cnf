@@ -1,10 +1,39 @@
+# ---------------------------------------------------------------------------
+# MariaDB server configuration.
+# Replaces Debian's /etc/mysql/mariadb.conf.d/50-server.cnf.
+# ---------------------------------------------------------------------------
 [mysqld]
-datadir         = /var/lib/mysql
-socket          = /var/run/mysqld/mysqld.sock
-pid-file        = /var/run/mysqld/mysqld.pid
-
-# Accept connections from any IP — Docker network isolates who can reach port 3306
-bind-address    = 0.0.0.0
-port            = 3306
-
 user            = mysql
+pid-file        = /run/mysqld/mysqld.pid
+socket          = /run/mysqld/mysqld.sock
+port            = 3306
+basedir         = /usr
+# This path is the mount point of the `mariadb-data` named volume. Everything
+# mysqld writes here survives `docker compose down` and image rebuilds.
+datadir         = /var/lib/mysql
+tmpdir          = /tmp
+
+# WHY 0.0.0.0 and not the Debian default 127.0.0.1:
+# 127.0.0.1 inside a container means "this container's loopback only" — the
+# WordPress container could never connect. 0.0.0.0 means "every interface this
+# container has", which is the loopback plus its one veth on the
+# inception-network bridge. Since the port is never published to the host
+# (EXPOSE, not `ports:`), the only thing that can reach 3306 is another
+# container attached to that same user-defined network.
+bind-address    = 0.0.0.0
+
+# WHY skip-name-resolve: without it, MariaDB does a reverse-DNS lookup on every
+# incoming connection. In Docker that lookup usually times out, adding seconds
+# of latency per connect. Grants in init.sh use '%' (any host), never hostnames,
+# so nothing depends on reverse DNS.
+skip-name-resolve
+
+# Never expose the server over a network protocol other than TCP/IP.
+skip-symbolic-links
+
+character-set-server  = utf8mb4
+collation-server      = utf8mb4_unicode_ci
+
+[client]
+socket          = /run/mysqld/mysqld.sock
+default-character-set = utf8mb4

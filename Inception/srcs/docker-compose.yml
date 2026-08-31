@@ -1,8 +1,28 @@
+# ---------------------------------------------------------------------------
+# Inception — three tiers, three containers, one private network.
+#
+#   internet/host  --443/tls-->  nginx  --fastcgi:9000-->  wordpress
+#                                                              |
+#                                                          mysql:3306
+#                                                              v
+#                                                           mariadb
+#
+# NOTE: there is no `version:` key. It has been obsolete since Compose v2 and
+# current versions print a warning when it is present.
+# ---------------------------------------------------------------------------
+
 services:
+
+  # -------------------------------------------------------------------------
+  # Data tier. No published port: reachable only from inside the network.
+  # -------------------------------------------------------------------------
   mariadb:
     build:
       context: requirements/mariadb
       dockerfile: Dockerfile
+    # Subject: "Each Docker image must have the same name as its corresponding
+    # service." The `:inception` tag is explicit because `latest` is prohibited
+    # and an untagged name defaults to exactly that.
     image: mariadb:inception
     container_name: mariadb
     env_file: .env
@@ -13,19 +33,110 @@ services:
       - mariadb-data:/var/lib/mysql
     networks:
       - inception-network
+    # Subject: "Your containers have to restart in case of a crash."
+    # on-failure restarts only on a non-zero exit — a crash. `always` would also
+    # restart a container the operator stopped on purpose, which fights `docker
+    # compose stop` during a demo.
     restart: on-failure
+    # expose = documentation + intra-network reachability. `ports:` would open a
+    # hole in the host firewall; the DB must never be reachable from outside.
     expose:
       - "3306"
 
-  # wordpress: (coming next)
-  # nginx:     (coming after wordpress)
+  # -------------------------------------------------------------------------
+  # Application tier. Speaks FastCGI only — no web server in this container.
+  # -------------------------------------------------------------------------
+  wordpress:
+    build:
+      context: requirements/wordpress
+      dockerfile: Dockerfile
+    image: wordpress:inception
+    container_name: wordpress
+    env_file: .env
+    secrets:
+      - db_password
+      - credentials
+    volumes:
+      - wordpress-data:/var/www/html
+    networks:
+      - inception-network
+    # depends_on orders CONTAINER START only — it does not wait for mysqld to
+    # accept queries. The real readiness gate is the bounded retry loop in
+    # tools/setup.sh. Both are needed: this for ordering, that for readiness.
+    depends_on:
+      - mariadb
+    restart: on-failure
+    expose:
+      - "9000"
 
+  # -------------------------------------------------------------------------
+  # Edge tier. The ONLY service with `ports:` — the single entry point.
+  # -------------------------------------------------------------------------
+  nginx:
+    build:
+      context: requirements/nginx
+      dockerfile: Dockerfile
+    image: nginx:inception
+    container_name: nginx
+    env_file: .env
+    volumes:
+      # Same named volume as WordPress, mounted read-only. NGINX serves the
+      # static assets directly off disk; it has no reason to write, and :ro
+      # means a compromised NGINX cannot plant a PHP file for FPM to execute.
+      - wordpress-data:/var/www/html:ro
+    networks:
+      - inception-network
+    depends_on:
+      - wordpress
+    restart: on-failure
+    ports:
+      # host:container. 443 only — no 80, no redirect. Subject: "the only entry
+      # point into your infrastructure via the port 443 only".
+      - "443:443"
+
+# ---------------------------------------------------------------------------
+# Secrets. Subject: "It is strongly recommended that you use Docker secrets to
+# store any confidential information."
+#
+# Each file is mounted read-only at /run/secrets/<name>. Note the precise
+# mechanism, because it is a fair defence question: in Docker SWARM, secrets are
+# distributed over the encrypted raft log and mounted on an in-memory tmpfs. In
+# Compose (what this project uses) a secret is a read-only BIND MOUNT of the
+# host file — verify with `docker exec wordpress grep secrets /proc/mounts`.
+#
+# The security win over environment variables is real either way: a secret is
+# not printed by `docker inspect`, not printed by `docker compose config`, not
+# inherited into every child process's /proc/<pid>/environ, and not baked into
+# an image layer that `docker history` can dump.
+#
+# ../secrets/ is git-ignored. Subject: "Any credentials, API keys, or passwords
+# found in your Git repository will result in project failure."
+# ---------------------------------------------------------------------------
 secrets:
   db_root_password:
     file: ../secrets/db_root_password.txt
   db_password:
     file: ../secrets/db_password.txt
+  credentials:
+    file: ../secrets/credentials.txt
 
+# ---------------------------------------------------------------------------
+# Volumes. Subject: "You must use docker named volumes for these two persistent
+# storages. Bind mounts are not allowed for these volumes." AND "Both named
+# volumes must store their data inside /home/login/data on the host machine."
+#
+# Those two rules pull in opposite directions, and this block is how they are
+# satisfied at once: these ARE named volumes (declared here, referenced by name,
+# managed by `docker volume`, removed by `docker compose down -v`) whose local
+# driver is told which host directory to back them with.
+#
+# `- /home/akuzmin/data/mariadb:/var/lib/mysql` under a service would be a bind
+# mount: an anonymous host path with no volume object, invisible to
+# `docker volume ls`. That is what the subject forbids.
+#
+# type: none + o: bind means "do not create a filesystem, bind this existing
+# directory" — so the directory must already exist. `make setup` creates it.
+# ---------------------------------------------------------------------------
 volumes:
   mariadb-data:
     driver: local
@@ -34,6 +145,26 @@ volumes:
       o: bind
       device: /home/akuzmin/data/mariadb
 
+  wordpress-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /home/akuzmin/data/wordpress
+
+# ---------------------------------------------------------------------------
+# Network. Subject: "The network line must be present in your
+# docker-compose.yml file", and `network: host`, `--link` and `links:` are
+# forbidden.
+#
+# A user-defined bridge (unlike the default docker0 bridge) gives every attached
+# container an entry in Docker's embedded DNS server at 127.0.0.11. That is why
+# `fastcgi_pass wordpress:9000` and `MYSQL_HOST=mariadb` work without `links:`
+# and without knowing any IP address.
+#
+# It also provides the isolation the design relies on: only containers attached
+# to inception-network can reach 3306 and 9000 at all.
+# ---------------------------------------------------------------------------
 networks:
   inception-network:
     driver: bridge

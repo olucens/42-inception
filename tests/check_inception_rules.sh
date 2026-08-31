@@ -17,6 +17,19 @@ fail() { FAIL_COUNT=$((FAIL_COUNT+1)); printf "${RED}FAIL${NC}  %s\n" "$1"; }
 warn() { WARN_COUNT=$((WARN_COUNT+1)); printf "${YELLOW}WARN${NC}  %s\n" "$1"; }
 section() { printf "\n${BOLD}== %s ==${NC}\n" "$1"; }
 
+# Strip comments before pattern-matching.
+#
+# WHY: this linter looks for literal strings like `tail -f` and `--link`. A
+# well-documented file explains WHY those patterns are forbidden, and therefore
+# contains them — in a comment. Grepping the raw text flags that as a violation,
+# which punishes exactly the files that are best commented. An evaluator reads
+# the code, not the prose about the code, and so should this script.
+#
+# `#` to end-of-line covers shell, YAML and Dockerfiles alike. It also blanks a
+# `#` inside a string literal, which is acceptable here: the cost is a missed
+# detection in a contrived case, versus a false failure on every documented file.
+strip_comments() { sed -e 's/#.*$//' "$1"; }
+
 # ---------------------------------------------------------------------------
 section "Project structure"
 
@@ -68,13 +81,13 @@ for svc in $MANDATORY_SERVICES; do
       ;;
   esac
 
-  if grep -qiE 'tail[[:space:]]+-f|sleep[[:space:]]+infinity|while[[:space:]]+(true|:)([[:space:]]|$)|(CMD|ENTRYPOINT)[[:space:]]*\[?"?(/bin/)?(bash|sh)"?\]?[[:space:]]*$' "$df"; then
+  if strip_comments "$df" | grep -qiE 'tail[[:space:]]+-f|sleep[[:space:]]+infinity|while[[:space:]]+(true|:)([[:space:]]|$)|(CMD|ENTRYPOINT)[[:space:]]*\[?"?(/bin/)?(bash|sh)"?\]?[[:space:]]*$'; then
     fail "$svc: forbidden hacky entrypoint pattern in Dockerfile (tail -f / sleep infinity / while true / bare bash-sh)"
   else
     pass "$svc: no forbidden entrypoint pattern in Dockerfile"
   fi
 
-  if grep -inE '(PASSWORD|PASSWD)[[:space:]]*=[[:space:]]*[^$[:space:]]' "$df" >/dev/null; then
+  if strip_comments "$df" | grep -inE '(PASSWORD|PASSWD)[[:space:]]*=[[:space:]]*[^$[:space:]]' >/dev/null; then
     fail "$svc: possible hardcoded password literal in Dockerfile — verify manually"
   else
     pass "$svc: no hardcoded password pattern in Dockerfile"
@@ -84,7 +97,7 @@ for svc in $MANDATORY_SERVICES; do
   if [ -d "$scripts_dir" ]; then
     while IFS= read -r -d '' sh; do
       [ -s "$sh" ] || continue
-      if grep -qiE 'tail[[:space:]]+-f|sleep[[:space:]]+infinity|while[[:space:]]+(true|:)([[:space:]]|$)' "$sh"; then
+      if strip_comments "$sh" | grep -qiE 'tail[[:space:]]+-f|sleep[[:space:]]+infinity|while[[:space:]]+(true|:)([[:space:]]|$)'; then
         fail "$svc: forbidden hacky pattern in $(basename "$sh")"
       else
         pass "$svc: no forbidden pattern in $(basename "$sh")"
@@ -98,13 +111,13 @@ section "docker-compose.yml"
 
 if [ -f "$COMPOSE" ]; then
 
-  if grep -qE '^[[:space:]]*(network_mode:[[:space:]]*host|network:[[:space:]]*host)' "$COMPOSE"; then
+  if strip_comments "$COMPOSE" | grep -qE '^[[:space:]]*(network_mode:[[:space:]]*host|network:[[:space:]]*host)'; then
     fail "network: host found in compose — forbidden"
   else
     pass "no network: host"
   fi
 
-  if grep -qE '(^[[:space:]]*links:|--link)' "$COMPOSE"; then
+  if strip_comments "$COMPOSE" | grep -qE '(^[[:space:]]*links:|--link)'; then
     fail "links: / --link found in compose — forbidden"
   else
     pass "no links: / --link"
