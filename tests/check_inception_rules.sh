@@ -8,6 +8,17 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_DIR="$ROOT_DIR/Inception"
 COMPOSE="$PROJECT_DIR/srcs/docker-compose.yml"
 MANDATORY_SERVICES="mariadb wordpress nginx"
+# Bonus services live under srcs/requirements/bonus/<name>/ (the layout the
+# subject's example tree shows). The same rules apply to them: pinned base
+# image, no hacky entrypoint, no hardcoded password.
+BONUS_DIR="$PROJECT_DIR/srcs/requirements/bonus"
+BONUS_SERVICES=""
+if [ -d "$BONUS_DIR" ]; then
+  for d in "$BONUS_DIR"/*/; do
+    [ -d "$d" ] || continue
+    BONUS_SERVICES="$BONUS_SERVICES $(basename "$d")"
+  done
+fi
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BOLD='\033[1m'; NC='\033[0m'
 PASS_COUNT=0; FAIL_COUNT=0; WARN_COUNT=0
@@ -57,13 +68,14 @@ done
 # ---------------------------------------------------------------------------
 section "Dockerfile content"
 
-for svc in $MANDATORY_SERVICES; do
-  df="$PROJECT_DIR/srcs/requirements/$svc/Dockerfile"
-  [ -f "$df" ] || continue
+check_service_dir() {
+  svc="$1"; svc_dir="$2"
+  df="$svc_dir/Dockerfile"
+  [ -f "$df" ] || { warn "$svc: no Dockerfile at $df"; return; }
 
   if [ ! -s "$df" ]; then
     warn "$svc/Dockerfile is empty — content checks skipped (not written yet)"
-    continue
+    return
   fi
 
   from_line=$(grep -im1 '^FROM' "$df" | sed -E 's/^FROM[[:space:]]+//I')
@@ -93,7 +105,7 @@ for svc in $MANDATORY_SERVICES; do
     pass "$svc: no hardcoded password pattern in Dockerfile"
   fi
 
-  scripts_dir="$PROJECT_DIR/srcs/requirements/$svc/tools"
+  scripts_dir="$svc_dir/tools"
   if [ -d "$scripts_dir" ]; then
     while IFS= read -r -d '' sh; do
       [ -s "$sh" ] || continue
@@ -104,7 +116,18 @@ for svc in $MANDATORY_SERVICES; do
       fi
     done < <(find "$scripts_dir" -maxdepth 1 -name '*.sh' -print0)
   fi
+}
+
+for svc in $MANDATORY_SERVICES; do
+  check_service_dir "$svc" "$PROJECT_DIR/srcs/requirements/$svc"
 done
+
+if [ -n "$BONUS_SERVICES" ]; then
+  section "Bonus services"
+  for svc in $BONUS_SERVICES; do
+    check_service_dir "$svc" "$BONUS_DIR/$svc"
+  done
+fi
 
 # ---------------------------------------------------------------------------
 section "docker-compose.yml"

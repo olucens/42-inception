@@ -10,6 +10,10 @@ FROM debian:bookworm-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
 
+# BONUS: php8.2-redis is the client extension the Redis object-cache drop-in
+# needs. Without it the redis-cache plugin loads but reports "not connected",
+# because there is nothing in PHP that can speak the Redis protocol.
+#
 # php8.2-fpm       — the FastCGI process manager (Debian 12 ships PHP 8.2)
 # php8.2-mysql     — the mysqli/pdo_mysql driver WordPress needs to reach MariaDB
 # gd/curl/xml/mbstring/zip — extensions WordPress core and most plugins require;
@@ -25,6 +29,7 @@ RUN apt-get update && \
         php8.2-xml \
         php8.2-mbstring \
         php8.2-zip \
+        php8.2-redis \
         mariadb-client \
         curl \
         ca-certificates \

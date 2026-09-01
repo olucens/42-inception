@@ -12,7 +12,9 @@ The goal is to run a working WordPress site behind TLS, where every layer is
 built by hand from a bare Debian base, so that nothing about the stack is
 opaque.
 
-Three services, three containers, one private bridge network:
+Eight services on this branch: the three mandatory tiers, plus the five bonus
+services. The mandatory part is unchanged and still stands on its own — the
+subject only assesses bonuses once the mandatory part is perfect.
 
 ```
                     host :443
@@ -38,7 +40,31 @@ Three services, three containers, one private bridge network:
     mariadb-data    -> mariadb:/var/lib/mysql
     wordpress-data  -> wordpress:/var/www/html   (rw)
                        nginx:/var/www/html       (ro)
+                       ftp:/var/www/html         (rw)   [bonus]
+    backup-data     -> backup:/backups                  [bonus]
 ```
+
+### Bonus services
+
+| Service | Port | What it does | Volume |
+|---|---|---|---|
+| **redis** | — | Persistent object cache for WordPress. `allkeys-lru` eviction, no persistence. | none — every value is derivable from MariaDB |
+| **ftp** | 21 + 21100-21110 | vsftpd onto the WordPress volume, chrooted to the site root. | shares `wordpress-data` |
+| **static** | 8080 | A static showcase site — plain HTML/CSS/JS, no PHP. Its own NGINX. | none — immutable content, baked into the image |
+| **adminer** | 8081 | Web UI for inspecting the database. | none — holds no state |
+| **backup** | — | Scheduled `mariadb-dump`, gzipped and rotated. The "service of your choice". | `backup-data`, deliberately separate from `mariadb-data` |
+
+Three of the five have no volume, and that is the point of the subject's phrase
+"if necessary": a cache, an immutable site and a stateless UI do not need one.
+Only `backup` does — and it must be a *different* volume from the database it
+protects, or it is not a backup.
+
+**Why a backup service was chosen as the free slot.** The mandatory stack
+protects against exactly one failure — losing a container. Volumes survive
+`docker rm`, rebuilds and restarts, and nothing else. They do not protect against
+`make fclean`, an `UPDATE` without a `WHERE`, a bad plugin corrupting tables, or
+the disk failing. A volume is redundancy; a backup is a copy at a point in time,
+which is the only thing that survives a mistake.
 
 Ports 3306 and 9000 are `expose`d, never published: they exist only on
 `inception-network`. NGINX on 443 is the single way in.
@@ -69,6 +95,16 @@ make
 Then open <https://akuzmin.42.fr>. The certificate is self-signed, so the
 browser shows a warning — that is expected (see "Technical choices").
 
+The bonus services are at <http://localhost:8080> (static site) and
+<http://localhost:8081> (Adminer, log in with `MYSQL_USER` against server
+`mariadb`). FTP is on port 21 as `FTP_USER`.
+
+Note the bonus adds a fourth secret:
+
+```bash
+openssl rand -base64 18 > secrets/ftp_password.txt && chmod 600 secrets/ftp_password.txt
+```
+
 | Command | Effect |
 |---|---|
 | `make` | build images and start the stack |
@@ -78,6 +114,9 @@ browser shows a warning — that is expected (see "Technical choices").
 | `make re` | `fclean` then `make` — a true from-scratch rebuild |
 | `make logs` / `make ps` | follow logs / show container state |
 | `make tls-test` | prove TLS 1.0/1.1 are refused and 1.2/1.3 accepted |
+| `make redis-status` | show the object cache is connected, with hit/miss counters |
+| `make backups` | list the dumps taken so far |
+| `make backup-now` | take a dump immediately instead of waiting for the schedule |
 
 User-facing details are in [USER_DOC.md](USER_DOC.md); setup and internals in
 [DEV_DOC.md](DEV_DOC.md).
@@ -121,6 +160,13 @@ also why none of these containers needs `tail -f`, `sleep infinity` or
   private key in git is a leaked credential.
 - **`restart: on-failure`, not `always`.** It restarts a crash but respects a
   deliberate `docker compose stop`.
+- **The bonus never weakens the mandatory part.** The extra published ports are
+  explicitly permitted ("you may open more ports to suit your needs"), and none
+  of them is a second route to the WordPress site — NGINX on 443 is still the
+  only way in. Redis and the backup service publish nothing at all.
+- **A failing bonus must not take the stack down.** WordPress treats a missing
+  Redis as non-fatal and serves uncached; the backup service logs and lets cron
+  retry. A cache that can break the site is worse than no cache.
 
 ### Virtual Machines vs Docker
 
@@ -238,13 +284,18 @@ AI (Claude) was used on this project for:
 - **Reviewing and explaining**, not authoring blind: producing the annotated
   rationale in `materials-inception/solutions/core-explained.md`, and the
   self-assessment material in `materials-inception/eval/`.
-- **Debugging**, by reading logs and forming hypotheses. Three defects in this
-  code were found this way and are documented in the rationale file: the
+- **Debugging**, by reading logs and forming hypotheses. Six defects in this
+  code were found this way — three in the mandatory part and three in the bonus —
+  and all are documented in the rationale files. In the mandatory part: the
   `mariadb-server` package pre-seeding `/var/lib/mysql` inside the image (which
   made Docker seed the "empty" volume and caused first-run setup to be skipped);
   `MYSQL_HOST` from `.env` hijacking the local MariaDB client's transport so
   `--protocol=socket` was ignored; and `http2 on;` being invalid on the nginx
-  1.22 that bookworm ships.
+  1.22 that bookworm ships. In the bonus: vsftpd refusing every connection
+  because a privilege-separated process cannot open `/dev/stdout`; PAM's
+  `pam_shells.so` rejecting the FTP login because the account's `nologin` shell
+  was not in `/etc/shells`; and the backup service racing MariaDB's cold start
+  and then not retrying until 03:00.
 - **Not** used to generate configuration that was then accepted untested. Every
   claim in these documents was checked against a running stack — TLS version
   enforcement with `openssl s_client`, PID 1 with `/proc/1/comm`, persistence by

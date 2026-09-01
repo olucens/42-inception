@@ -14,6 +14,11 @@ Three services, each in its own container:
 | **nginx** | The web server. Terminates HTTPS and is the only way in. | your browser, `https://akuzmin.42.fr` |
 | **wordpress** | The site itself: pages, posts, admin panel, users. | only through nginx |
 | **mariadb** | The database, where all the site content lives. | only from wordpress |
+| **redis** | Speeds the site up by remembering database answers. | only from wordpress |
+| **ftp** | Upload/download site files directly. | your FTP client, port 21 |
+| **static** | A separate showcase page, unrelated to WordPress. | <http://localhost:8080> |
+| **adminer** | A web page for looking inside the database. | <http://localhost:8081> |
+| **backup** | Saves a copy of the database every night. | nothing — it just runs |
 
 Only NGINX is exposed. The database and PHP cannot be reached from your machine
 or from the network at all — this is deliberate and is what keeps the site safe.
@@ -102,6 +107,7 @@ All passwords are in the `secrets/` directory, one file each. This directory is
 | `secrets/db_root_password.txt` | MariaDB `root` password — administrative access to the database |
 | `secrets/db_password.txt` | the database password WordPress itself uses |
 | `secrets/credentials.txt` | the two WordPress account passwords, as `KEY=value` lines |
+| `secrets/ftp_password.txt` | the FTP account password |
 
 `credentials.txt` looks like this:
 
@@ -231,3 +237,90 @@ docker logs nginx --tail 40     # just one
 
 Nothing here is fixed by deleting data. Resist `make fclean` as a first move: it
 destroys the site and usually hides the real cause rather than fixing it.
+
+---
+
+## 7. Using the bonus services
+
+### Redis cache
+
+Nothing to do — it works by itself. To confirm it is actually being used:
+
+```bash
+make redis-status
+# Status: Connected
+# ... keyspace_hits / keyspace_misses
+```
+
+`Connected` plus a rising `keyspace_hits` means the cache is doing its job. If it
+says not connected, the site still works — just slower. That is deliberate: a
+broken cache must never take the site down.
+
+### FTP
+
+Connect with any FTP client (FileZilla, `lftp`, or `curl`) to the host on port
+21, as `FTP_USER` from `srcs/.env` with the password from
+`secrets/ftp_password.txt`. **Passive mode is required** — active mode cannot
+work through Docker's NAT. Most clients use passive by default; FileZilla calls
+it "Transfer mode: Passive".
+
+```bash
+curl --ftp-pasv -u ftpuser:PASSWORD ftp://akuzmin.42.fr/            # list
+curl --ftp-pasv -u ftpuser:PASSWORD -T theme.zip ftp://akuzmin.42.fr/  # upload
+```
+
+You land directly in the site root and cannot leave it. A file uploaded here is
+served by the website immediately — it is the same volume.
+
+*If login works but listing hangs forever*, passive mode is off or
+`FTP_PASV_ADDRESS` in `srcs/.env` is wrong. It must be the address **you** use to
+reach the server, not the container's.
+
+### Static site
+
+<http://localhost:8080> — plain HTTP, no login. Unrelated to WordPress; it has
+its own web server and shares nothing with the site.
+
+### Adminer
+
+<http://localhost:8081>. Log in with:
+
+| Field | Value |
+|---|---|
+| System | MySQL |
+| Server | `mariadb` |
+| Username | `MYSQL_USER` from `srcs/.env` |
+| Password | contents of `secrets/db_password.txt` |
+| Database | `MYSQL_DATABASE` from `srcs/.env` |
+
+Server is `mariadb` — the *service name*, not an IP and not `localhost`.
+
+Adminer can change and delete data directly, with no undo and no WordPress
+validation. Use it to look, not to edit, unless you know exactly what you are
+doing.
+
+### Backups
+
+A dump is taken nightly at 03:00 and the 7 most recent are kept.
+
+```bash
+make backups        # list what exists
+make backup-now     # take one immediately
+```
+
+Files land on their own volume at `/home/akuzmin/data/backups`, separate from
+the database — a backup stored beside the data it protects is not a backup.
+
+To restore one:
+
+```bash
+docker exec backup sh -c 'zcat /backups/wordpress-YYYYMMDD-HHMMSS.sql.gz' \
+  | docker exec -i mariadb sh -c 'unset MYSQL_HOST; mariadb --protocol=socket \
+      -u root -p"$(cat /run/secrets/db_root_password)"'
+```
+
+Restoring **overwrites the current database**. Take a fresh backup first.
+
+*On a very first start the initial dump may be nearly empty* — the backup
+service becomes ready slightly before WordPress finishes installing. Run
+`make backup-now` once the site is up.

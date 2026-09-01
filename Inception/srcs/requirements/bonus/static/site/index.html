@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inception — Infrastructure Overview</title>
+<meta name="description" content="A static showcase of the Inception container stack.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="hero">
+  <p class="eyebrow">42 · Inception</p>
+  <h1>Six containers, one kernel.</h1>
+  <p class="lede">
+    A hand-built WordPress infrastructure. No ready-made application images —
+    every service is installed into a bare Debian base, kept to one process, and
+    wired together over a private bridge network.
+  </p>
+  <p class="meta">This page is the bonus static site. Plain HTML, CSS and a little JavaScript — no PHP.</p>
+</header>
+
+<main>
+
+<section>
+  <h2>The stack</h2>
+  <div class="grid" id="services"></div>
+</section>
+
+<section>
+  <h2>How a request flows</h2>
+  <ol class="flow">
+    <li><span class="n">1</span><div><strong>Browser → NGINX :443</strong><p>TLS 1.2/1.3 terminates here. The only port published to the host.</p></div></li>
+    <li><span class="n">2</span><div><strong>NGINX decides</strong><p>Static file? Served straight off the volume. <code>.php</code>? Forwarded over FastCGI.</p></div></li>
+    <li><span class="n">3</span><div><strong>NGINX → PHP-FPM :9000</strong><p>Resolved as <code>wordpress:9000</code> by Docker's embedded DNS at 127.0.0.11.</p></div></li>
+    <li><span class="n">4</span><div><strong>PHP → Redis</strong><p>Object cache hit? Skip the database entirely.</p></div></li>
+    <li><span class="n">5</span><div><strong>PHP → MariaDB :3306</strong><p>On a miss. Unreachable from the host — network isolation, not just a password.</p></div></li>
+  </ol>
+</section>
+
+<section>
+  <h2>Rules the build follows</h2>
+  <ul class="rules">
+    <li><b>No <code>latest</code>.</b> Every base image and tool is pinned, so a rebuild is reproducible.</li>
+    <li><b>No ready-made app images.</b> Debian 12 in, packages installed by hand.</li>
+    <li><b>PID 1 is the real daemon.</b> No <code>tail&nbsp;-f</code>, no <code>sleep&nbsp;infinity</code> — every entrypoint ends in <code>exec</code>, so the daemon receives SIGTERM.</li>
+    <li><b>Passwords are files, not env vars.</b> Docker secrets under <code>/run/secrets</code>; <code>docker inspect</code> reveals nothing.</li>
+    <li><b>Named volumes, not bind mounts.</b> Backed by <code>/home/akuzmin/data</code> via the local driver.</li>
+    <li><b>One process, one container.</b> No web server inside the WordPress container.</li>
+  </ul>
+</section>
+
+</main>
+
+<footer>
+  <p>Built with Docker Compose · Debian bookworm · <span id="year"></span></p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -65,6 +65,9 @@ services:
     # tools/setup.sh. Both are needed: this for ordering, that for readiness.
     depends_on:
       - mariadb
+      # BONUS: ordering only. setup.sh treats a missing Redis as non-fatal — the
+      # site must still serve, just uncached — so no readiness gate is needed.
+      - redis
     restart: on-failure
     expose:
       - "9000"
@@ -94,6 +97,135 @@ services:
       # point into your infrastructure via the port 443 only".
       - "443:443"
 
+  # =========================================================================
+  # BONUS SERVICES
+  #
+  # Subject: "A Dockerfile must be written for each additional service. Thus,
+  # each service will run inside its own container and will have, if necessary,
+  # its dedicated volume."
+  #
+  # Note "if necessary": redis, static and adminer deliberately have NO volume,
+  # and each can say why. Only `backup` gains one, because a dump that is not
+  # stored somewhere separate from the database is not a backup.
+  #
+  # Subject: "you may open more ports to suit your needs" — which is what makes
+  # the published ports below legitimate without weakening the mandatory rule
+  # that NGINX is the only entry point to the WordPress site itself.
+  # =========================================================================
+
+  # -------------------------------------------------------------------------
+  # Redis — persistent object cache for WordPress.
+  # -------------------------------------------------------------------------
+  redis:
+    build:
+      context: requirements/bonus/redis
+      dockerfile: Dockerfile
+    image: redis:inception
+    container_name: redis
+    env_file: .env
+    networks:
+      - inception-network
+    restart: on-failure
+    # No volume, on purpose: every value in this cache is derivable from
+    # MariaDB, which is the source of truth. Persisting a cache buys nothing and
+    # costs disk I/O.
+    #
+    # Not published: only WordPress needs it, and an internet-facing Redis with
+    # no password is a well-known way to lose a server.
+    expose:
+      - "6379"
+
+  # -------------------------------------------------------------------------
+  # FTP — file access to the WordPress volume.
+  # -------------------------------------------------------------------------
+  ftp:
+    build:
+      context: requirements/bonus/ftp
+      dockerfile: Dockerfile
+    image: ftp:inception
+    container_name: ftp
+    env_file: .env
+    secrets:
+      - ftp_password
+    volumes:
+      # The SAME named volume WordPress writes and NGINX reads. This is the
+      # requirement: "pointing to the volume of your WordPress website".
+      # Read-write here — uploading files is the entire purpose.
+      - wordpress-data:/var/www/html
+    networks:
+      - inception-network
+    depends_on:
+      - wordpress
+    restart: on-failure
+    ports:
+      # 21 is the control channel. The 21100-21110 range is the PASSIVE data
+      # range and must match pasv_min_port/pasv_max_port in vsftpd.conf exactly:
+      # the server names one of these ports to the client, and if it is not
+      # forwarded the login succeeds but every transfer hangs.
+      - "21:21"
+      - "21100-21110:21100-21110"
+
+  # -------------------------------------------------------------------------
+  # Static site — plain HTML/CSS/JS, no PHP.
+  # -------------------------------------------------------------------------
+  static:
+    build:
+      context: requirements/bonus/static
+      dockerfile: Dockerfile
+    image: static:inception
+    container_name: static
+    networks:
+      - inception-network
+    restart: on-failure
+    # No volume: the site is immutable content baked into the image, so it
+    # belongs to an image version rather than to runtime state.
+    ports:
+      - "8080:8080"
+
+  # -------------------------------------------------------------------------
+  # Adminer — database web UI.
+  # -------------------------------------------------------------------------
+  adminer:
+    build:
+      context: requirements/bonus/adminer
+      dockerfile: Dockerfile
+    image: adminer:inception
+    container_name: adminer
+    env_file: .env
+    networks:
+      - inception-network
+    depends_on:
+      - mariadb
+    restart: on-failure
+    # No volume and no secrets: Adminer holds no state, and credentials are
+    # typed into its login form rather than stored anywhere in the image.
+    ports:
+      - "8081:8080"
+
+  # -------------------------------------------------------------------------
+  # Backup — scheduled mariadb-dump. The "service of your choice".
+  # -------------------------------------------------------------------------
+  backup:
+    build:
+      context: requirements/bonus/backup
+      dockerfile: Dockerfile
+    image: backup:inception
+    container_name: backup
+    env_file: .env
+    secrets:
+      - db_password
+    volumes:
+      # Its OWN volume, separate from mariadb-data. A backup written next to the
+      # data it protects dies with it — `down -v`, a bad disk, or a wrong path
+      # would take both. Separation is the whole guarantee.
+      - backup-data:/backups
+    networks:
+      - inception-network
+    depends_on:
+      - mariadb
+    restart: on-failure
+    # Nothing published: it is a scheduler, it serves no requests.
+
 # ---------------------------------------------------------------------------
 # Secrets. Subject: "It is strongly recommended that you use Docker secrets to
 # store any confidential information."
@@ -119,6 +251,9 @@ secrets:
     file: ../secrets/db_password.txt
   credentials:
     file: ../secrets/credentials.txt
+  # BONUS
+  ftp_password:
+    file: ../secrets/ftp_password.txt
 
 # ---------------------------------------------------------------------------
 # Volumes. Subject: "You must use docker named volumes for these two persistent
@@ -151,6 +286,15 @@ volumes:
       type: none
       o: bind
       device: /home/akuzmin/data/wordpress
+
+  # BONUS: dedicated volume for database dumps. Deliberately a different volume
+  # from mariadb-data — see the `backup` service.
+  backup-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /home/akuzmin/data/backups
 
 # ---------------------------------------------------------------------------
 # Network. Subject: "The network line must be present in your

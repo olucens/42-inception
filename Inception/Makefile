@@ -34,7 +34,7 @@ check:
 	@test -f $(ENV_FILE) || { \
 		echo "ERROR: $(ENV_FILE) is missing."; \
 		echo "       cp srcs/.env.example $(ENV_FILE) and edit it."; exit 1; }
-	@for f in db_root_password db_password credentials; do \
+	@for f in db_root_password db_password credentials ftp_password; do \
 		test -f $(SECRETS_DIR)/$$f.txt || { \
 			echo "ERROR: $(SECRETS_DIR)/$$f.txt is missing."; \
 			echo "       see DEV_DOC.md, section 'Secrets'."; exit 1; }; \
@@ -49,7 +49,7 @@ check:
 # unless this ran first.
 # ---------------------------------------------------------------------------
 setup:
-	@mkdir -p $(DATA_DIR)/mariadb $(DATA_DIR)/wordpress
+	@mkdir -p $(DATA_DIR)/mariadb $(DATA_DIR)/wordpress $(DATA_DIR)/backups
 
 # ---------------------------------------------------------------------------
 # Lifecycle
@@ -81,7 +81,7 @@ clean: down
 # a from-scratch build works.
 fclean: clean
 	$(COMPOSE) down -v 2>/dev/null || true
-	@rm -rf $(DATA_DIR)/mariadb $(DATA_DIR)/wordpress
+	@rm -rf $(DATA_DIR)/mariadb $(DATA_DIR)/wordpress $(DATA_DIR)/backups
 
 re: fclean all
 
@@ -103,4 +103,22 @@ tls-test:
 			then echo "ACCEPTED"; else echo "refused"; fi; \
 	done
 
-.PHONY: all check setup up build down stop start clean fclean re logs ps tls-test
+# --- Bonus service helpers --------------------------------------------------
+
+# Prove the object cache is actually connected and being used.
+redis-status:
+	@docker exec wordpress wp --path=/var/www/html --allow-root redis status || true
+	@echo "--- keys currently cached ---"
+	@docker exec redis redis-cli DBSIZE
+	@docker exec redis redis-cli INFO stats | grep -E "keyspace_hits|keyspace_misses" || true
+
+# List the dumps taken so far, newest last.
+backups:
+	@docker exec backup ls -lh /backups
+
+# Take a backup right now instead of waiting for the schedule.
+backup-now:
+	@docker exec backup /usr/local/bin/backup.sh
+
+.PHONY: all check setup up build down stop start clean fclean re logs ps tls-test \
+        redis-status backups backup-now

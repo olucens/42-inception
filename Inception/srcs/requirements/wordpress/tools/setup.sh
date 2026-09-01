@@ -128,6 +128,51 @@ else
     log "WordPress installed — admin='${WP_ADMIN_USER}', second user='${WP_USER}'"
 fi
 
+# --- BONUS: Redis object cache ----------------------------------------------
+# Runs on EVERY start, not only on first install, and is idempotent: the plugin
+# may have been deactivated by hand, or the container rebuilt against an
+# existing volume. `wp plugin install --activate` is a no-op when already there.
+#
+# WHY this matters at all: WordPress's built-in object cache is non-persistent —
+# it lives in PHP's memory for the duration of one request and is discarded.
+# Every page view therefore re-runs the same queries for options, post meta and
+# terms. A persistent backend keeps them in a store shared by all FPM workers.
+if [ "${WP_REDIS_ENABLED:-1}" = "1" ]; then
+    : "${WP_REDIS_HOST:=redis}"
+    : "${WP_REDIS_PORT:=6379}"
+
+    log "configuring redis object cache at ${WP_REDIS_HOST}:${WP_REDIS_PORT}"
+
+    # These constants must exist BEFORE the drop-in is enabled — object-cache.php
+    # reads them as it loads, and with no host it silently falls back to
+    # 127.0.0.1, which inside this container is nothing at all.
+    $WP config set WP_REDIS_HOST "${WP_REDIS_HOST}"
+    $WP config set WP_REDIS_PORT "${WP_REDIS_PORT}" --raw
+    # Namespaces the keys, so a second WordPress on the same Redis cannot
+    # collide with this one.
+    $WP config set WP_CACHE_KEY_SALT "${DOMAIN_NAME}"
+    # Tells WordPress an external object cache is present.
+    $WP config set WP_CACHE true --raw
+
+    if $WP plugin is-installed redis-cache 2>/dev/null; then
+        log "redis-cache plugin already installed"
+    else
+        $WP plugin install redis-cache --activate
+    fi
+    $WP plugin activate redis-cache 2>/dev/null || true
+
+    # `wp redis enable` copies the plugin's object-cache.php into wp-content/ as
+    # a DROP-IN. This is the step that actually routes cache reads and writes to
+    # Redis: installing and activating the plugin alone changes nothing.
+    # Non-fatal — if Redis is not up yet the site must still serve, just uncached.
+    if $WP redis status 2>/dev/null | grep -qi "connected"; then
+        log "redis already connected"
+    else
+        $WP redis enable 2>/dev/null && log "redis object cache enabled" \
+            || log "could not enable redis cache yet (site works uncached; retried next start)"
+    fi
+fi
+
 # WP-CLI ran as root (--allow-root), so fresh files are root-owned. The FPM
 # workers run as www-data and must be able to write uploads, themes and updates.
 chown -R www-data:www-data "${WP_PATH}"

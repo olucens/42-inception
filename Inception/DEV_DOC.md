@@ -38,8 +38,19 @@ docker --version && docker compose version && make --version
     └── requirements/
         ├── mariadb/   Dockerfile · conf/mariadb.cnf        · tools/init.sh
         ├── wordpress/ Dockerfile · conf/www.conf           · tools/setup.sh
-        └── nginx/     Dockerfile · conf/nginx.conf.template · tools/entrypoint.sh
+        ├── nginx/     Dockerfile · conf/nginx.conf.template · tools/entrypoint.sh
+        └── bonus/
+            ├── redis/   Dockerfile · conf/redis.conf  · tools/entrypoint.sh
+            ├── ftp/     Dockerfile · conf/vsftpd.conf · tools/entrypoint.sh
+            ├── static/  Dockerfile · conf/nginx.conf  · site/ · tools/entrypoint.sh
+            ├── adminer/ Dockerfile ·                    tools/entrypoint.sh
+            └── backup/  Dockerfile ·                    tools/{entrypoint,backup}.sh
 ```
+
+Bonus services live under `requirements/bonus/`, matching the layout in the
+subject's example tree. They follow the same three-part shape as the mandatory
+ones and are held to the same rules — `tests/check_inception_rules.sh` checks
+them too.
 
 Every service follows the same three-part shape — `Dockerfile`, `conf/`,
 `tools/` — so a new service is always added the same way.
@@ -61,6 +72,10 @@ services through `env_file:`.
 | `WP_TITLE`, `WP_URL` | site title, and the canonical `https://` URL pinned into `wp-config.php` |
 | `WP_ADMIN_USER`, `WP_ADMIN_EMAIL` | the administrator. **The name must not contain `admin`/`administrator`** — `tools/setup.sh` refuses to start otherwise |
 | `WP_USER`, `WP_USER_EMAIL`, `WP_USER_ROLE` | the second, non-administrator account the subject requires |
+| `WP_REDIS_ENABLED`, `WP_REDIS_HOST`, `WP_REDIS_PORT` | object cache. Set `WP_REDIS_ENABLED=0` to run without it |
+| `FTP_USER` | FTP account name; the password is a secret |
+| `FTP_PASV_ADDRESS` | address advertised for passive data connections — must be the address the *client* uses |
+| `BACKUP_SCHEDULE`, `BACKUP_KEEP` | cron expression and how many dumps to retain |
 
 ### Secrets
 
@@ -72,6 +87,7 @@ openssl rand -base64 24 > secrets/db_root_password.txt
 openssl rand -base64 24 > secrets/db_password.txt
 printf 'WP_ADMIN_PASSWORD=%s\nWP_USER_PASSWORD=%s\n' \
     "$(openssl rand -base64 18)" "$(openssl rand -base64 18)" > secrets/credentials.txt
+openssl rand -base64 18 > secrets/ftp_password.txt      # bonus
 chmod 600 secrets/*.txt
 ```
 
@@ -267,6 +283,30 @@ call.
 `listen` parameter; the standalone directive makes nginx refuse to start with
 `unknown directive "http2"`. The config uses `listen 443 ssl http2;`.
 
+Three more from the bonus, all of the same character — silent failures that
+look like something else.
+
+**vsftpd cannot log to `/dev/stdout`.** The usual container idiom fails here
+because vsftpd opens its log from a privilege-separated process, and
+`/dev/stdout` is a symlink to `/proc/self/fd/1` — "self" being that process, not
+PID 1. The open fails and vsftpd rejects every connection with
+`500 OOPS: failed to open vsftpd log file:/dev/stdout` before sending a banner.
+The entrypoint symlinks the log path to `/proc/1/fd/1` instead, which is
+PID 1's stdout and therefore what Docker captures.
+
+**PAM rejects a `nologin` shell.** Debian's `/etc/pam.d/vsftpd` ends with
+`auth required pam_shells.so`, which refuses any user whose login shell is not
+listed in `/etc/shells`. The FTP account is deliberately given
+`/usr/sbin/nologin`, so the login failed with a bare `530 Login incorrect` — no
+hint that the password was correct. The entrypoint appends `/usr/sbin/nologin`
+to `/etc/shells`; the account still cannot open an interactive shell.
+
+**The backup service raced MariaDB's cold start.** `depends_on` orders container
+start, not readiness, so the initial dump ran while `mysql_install_db` was still
+going and failed with `ERROR 2002 ... (115)`. Because cron's next run was 03:00,
+the operator would find an empty `/backups` hours later. It now waits for an
+authenticated query, bounded, exactly like the WordPress entrypoint.
+
 ### Conventions to keep
 
 - Pin every base image and every downloaded tool to an explicit version.
@@ -279,6 +319,11 @@ call.
   `depends_on` only orders container start, not service readiness.
 - Secrets are files, `.env` is configuration. Nothing confidential in a
   Dockerfile, in `ENV`, or on a command line visible in `ps`.
+- A bonus service must never be able to take the mandatory stack down. Treat its
+  absence as non-fatal and log loudly instead of exiting.
+- `cron` does **not** inherit the environment of the process that started it.
+  Anything a scheduled job needs must be written to a file the job reads — this
+  is the usual reason a containerised cron job appears to do nothing.
 
 ### Adding a service
 
@@ -296,4 +341,7 @@ call.
 git ls-files | grep -E 'secrets/|srcs/\.env$'   # must be empty
 make re                                          # must build and run from zero
 make tls-test                                    # 1.0/1.1 refused, 1.2/1.3 accepted
+make redis-status                                # cache connected
+make backups                                     # at least one dump present
+bash ../tests/check_inception_rules.sh           # failed: 0
 ```
