@@ -28,7 +28,7 @@ bind-address    = 0.0.0.0
 # so nothing depends on reverse DNS.
 skip-name-resolve
 
-# Never expose the server over a network protocol other than TCP/IP.
+# Forbid symbolic links to table files, so a table cannot point outside datadir.
 skip-symbolic-links
 
 character-set-server  = utf8mb4

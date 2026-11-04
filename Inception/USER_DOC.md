@@ -36,14 +36,13 @@ make            # start again; the site is exactly as you left it
 ```
 
 First start takes a few minutes: images are built, the database is initialised
-and WordPress is installed. Later starts take seconds.
+and WordPress is installed. Later starts take seconds. `make` returns only when
+all three containers are healthy, so at that point the site is ready.
 
-**When it is really ready.** `make ps` showing `running` is not enough on the
-very first start — WordPress is still installing. Wait for this line:
+On a machine that has never run the project, create the configuration first:
 
 ```bash
-make logs | grep wordpress-init
-# ... [wordpress-init] starting php-fpm 8.2 as PID 1     <- ready
+make init       # creates srcs/.env and random passwords in secrets/
 ```
 
 ### Danger zone
@@ -52,7 +51,8 @@ make logs | grep wordpress-init
 make fclean     # DELETES THE DATABASE AND THE WHOLE SITE, PERMANENTLY
 ```
 
-`make fclean` removes the volumes and wipes `/home/akuzmin/data`. Every post,
+`make fclean` removes the volumes and wipes the data in `/home/akuzmin/data` (it
+asks for your `sudo` password because the containers own those files). Every post,
 page, user and uploaded image is gone and there is no undo. `make down` is what
 you want for everyday stopping. Use `fclean` only to prove a clean rebuild works
 (`make re`), or when deliberately starting over.
@@ -152,8 +152,8 @@ with a `make fclean`, i.e. when starting from scratch.
 make ps
 ```
 
-All three containers should say `running`. `restarting` means one is crash-looping
-— go to §6.
+All three containers should say `running (healthy)`. `restarting` means one is
+crash-looping — go to §6.
 
 ### The site actually answers over HTTPS
 
@@ -171,7 +171,8 @@ This is a hard requirement of the project, and it is directly checkable:
 
 ```bash
 make tls-test
-# tls1_1   refused      <- older, broken protocols rejected
+# tls1     refused      <- older, broken protocols rejected
+# tls1_1   refused
 # tls1_2   ACCEPTED
 # tls1_3   ACCEPTED
 ```
@@ -189,6 +190,19 @@ Neither of these should connect — that is the point:
 ```bash
 nc -zv akuzmin.42.fr 3306    # database   -> must be refused
 nc -zv akuzmin.42.fr 9000    # PHP-FPM    -> must be refused
+```
+
+### Logging in to the database
+
+```bash
+docker exec -it mariadb mariadb -u root -p          # password: secrets/db_root_password.txt
+```
+
+```sql
+SHOW DATABASES;
+USE wordpress;
+SHOW TABLES;
+SELECT user_login FROM wp_users;
 ```
 
 ### The two required accounts exist
@@ -220,8 +234,8 @@ docker logs nginx --tail 40     # just one
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `make` stops at `ERROR: srcs/.env is missing` | first run on this machine | `cp srcs/.env.example srcs/.env` |
-| `ERROR: secrets/....txt is missing` | secrets not created | see §4 and README "Instructions" |
+| `make` stops at `ERROR: ... is missing. Run: make init` | first run on this machine | `make init` |
+| `docker logs wordpress`: `cannot log in to MariaDB` | `secrets/` was regenerated, the data still holds the old passwords | restore the old `secrets/`, or `make fclean` to start over |
 | browser: site can't be reached | domain not in `/etc/hosts`, or stack down | §3, then `make ps` |
 | browser: connection refused on `http://` | port 80 is closed by design | use `https://` |
 | `502 Bad Gateway` | nginx is up but PHP-FPM is not | `docker logs wordpress` |

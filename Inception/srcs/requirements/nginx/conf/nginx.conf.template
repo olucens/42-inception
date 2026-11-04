@@ -41,8 +41,9 @@ http {
     client_max_body_size 32m;
 
     server {
-        # ssl + http2 on 443, for both IPv4 and IPv6. No `listen 80`
-        # anywhere: the subject permits port 443 only.
+        # ssl + http2 on 443. No `listen 80` anywhere: the subject permits port
+        # 443 only. No IPv6 listener either: inception-network is IPv4-only, and
+        # on a kernel with IPv6 disabled `listen [::]:443` stops nginx from starting.
         #
         # NOTE on the http2 syntax: Debian bookworm ships nginx 1.22, where
         # HTTP/2 is a parameter of `listen`. The standalone `http2 on;`
@@ -50,7 +51,6 @@ http {
         # with `unknown directive "http2"`. Since the base image is pinned to
         # bookworm, the 1.22 form is the correct one here.
         listen      443 ssl http2;
-        listen      [::]:443 ssl http2;
 
         server_name ${DOMAIN_NAME};
 
@@ -87,6 +87,16 @@ http {
             try_files $uri $uri/ /index.php?$args;
         }
 
+        # wp-config.php holds the database password; .htaccess and dotfiles are
+        # Apache leftovers that must never be downloadable. Regex locations are
+        # tried in file order, so the dotfile rule must come before the .php rule.
+        location ~ /\. {
+            deny all;
+        }
+        location = /wp-config.php {
+            deny all;
+        }
+
         location ~ \.php$ {
             # Reject requests where the .php part does not end the path
             # (/foo.php/bar.jpg). Combined with the SCRIPT_FILENAME check below
@@ -97,7 +107,7 @@ http {
 
             # `wordpress` is the compose service name, resolved by Docker's
             # embedded DNS at 127.0.0.11 to that container's IP on
-            # inception-network. This is what replaces the forbidden `links:`.
+            # inception-network.
             fastcgi_pass  wordpress:9000;
             fastcgi_index index.php;
 
@@ -106,6 +116,11 @@ http {
             # other side of the network too.
             fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
 
+            # Debian's fastcgi_params passes HTTP_HOST as $host, which drops the port.
+            # On a non-default port WordPress would then see a URL different from
+            # WP_HOME and redirect to itself forever. $http_host keeps the port.
+            fastcgi_param HTTP_HOST $http_host;
+
             # TLS terminates here, so the FastCGI request itself is plaintext.
             # Telling PHP that the *client* connection was HTTPS makes
             # is_ssl() true, so WordPress emits https:// URLs and sets the
@@ -113,15 +128,6 @@ http {
             fastcgi_param HTTPS on;
 
             fastcgi_read_timeout 60s;
-        }
-
-        # wp-config.php holds the database password; .htaccess and dotfiles are
-        # Apache leftovers that must never be downloadable.
-        location ~ /\. {
-            deny all;
-        }
-        location = /wp-config.php {
-            deny all;
         }
     }
 }

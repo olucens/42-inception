@@ -1,11 +1,11 @@
 # ---------------------------------------------------------------------------
 # MariaDB — the database tier. NOTHING else runs in this container.
 #
-# WHY debian:bookworm and not "latest", not "mariadb":
+# WHY debian:bookworm and not the ready-made "mariadb" image:
 #   * Subject: "containers must be built either from the penultimate stable
 #     version of Alpine or Debian". Debian stable today is 13 (trixie),
 #     so the penultimate stable is 12 (bookworm).
-#   * Subject: "The latest tag is prohibited." An unpinned tag makes the build
+#   * An unpinned tag is prohibited by the subject and makes the build
 #     non-reproducible: the same Dockerfile would produce a different image
 #     next month.
 #   * Subject: "it is forbidden to pull ready-made Docker images" — so we
@@ -38,15 +38,11 @@ RUN apt-get update && \
 # ~113 MB of system tables baked into the image at /var/lib/mysql.
 #
 # When a container starts, Docker seeds an EMPTY named volume with whatever the
-# image has at the mount point. So the volume would come up already containing
-# /var/lib/mysql/mysql — and tools/init.sh, which uses that directory as its
-# "already initialised" marker, would skip setup entirely. The result is a
-# database with no `wordpress` schema and no `wp_user`, and a WordPress
-# container stuck on "Host '172.x.x.x' is not allowed to connect".
+# image has at the mount point. The volume would then start with system tables
+# created at build time, not by tools/init.sh, with a root account nobody set up.
 #
 # Emptying the directory here makes a fresh volume genuinely empty, so init.sh
-# runs mysql_install_db itself, at RUNTIME, against the real volume. It also
-# removes 113 MB of dead weight from the image.
+# runs mysql_install_db itself, at RUNTIME, against the real volume.
 RUN rm -rf /var/lib/mysql/* && \
     mkdir -p /var/lib/mysql && \
     chown -R mysql:mysql /var/lib/mysql

@@ -1,10 +1,9 @@
 # ---------------------------------------------------------------------------
 # WordPress + PHP-FPM — the application tier.
 #
-# Subject: "A Docker container that contains WordPress + php-fpm (it must be
-# installed and configured) only, without nginx."
+# Subject: this container holds WordPress + php-fpm only.
 # So there is NO web server in this image. It speaks FastCGI on port 9000 and
-# nothing else. NGINX is a separate container and a separate concern.
+# nothing else. The web server is a separate container and a separate concern.
 # ---------------------------------------------------------------------------
 FROM debian:bookworm-slim
 
@@ -14,7 +13,8 @@ ARG DEBIAN_FRONTEND=noninteractive
 # php8.2-mysql     — the mysqli/pdo_mysql driver WordPress needs to reach MariaDB
 # gd/curl/xml/mbstring/zip — extensions WordPress core and most plugins require;
 #                    without them the admin panel shows "missing extension" notices
-# mariadb-client   — used ONLY by setup.sh to wait until the DB accepts queries
+# mariadb-client   — used ONLY by setup.sh to wait until the DB accepts queries;
+#                    WP-CLI's `db` commands also need it
 # curl, ca-certificates — to fetch WP-CLI over HTTPS at build time
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -49,13 +49,12 @@ COPY conf/www.conf /etc/php/8.2/fpm/pool.d/www.conf
 COPY tools/setup.sh /usr/local/bin/setup.sh
 RUN chmod +x /usr/local/bin/setup.sh
 
-# /run is a tmpfs recreated empty on every start, so the pid/socket dir has to
-# exist for the master process; setup.sh recreates it at runtime as well.
+# php-fpm writes its pid file to /run/php, and the directory must already exist.
 RUN mkdir -p /run/php /var/www/html && chown -R www-data:www-data /var/www/html
 
 WORKDIR /var/www/html
 
-# Documentation only — 9000 is reachable from NGINX over the bridge network and
+# Documentation only — 9000 is reachable from the web server over the bridge network and
 # is never published to the host.
 EXPOSE 9000
 

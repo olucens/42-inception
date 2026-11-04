@@ -2,8 +2,8 @@
 # ---------------------------------------------------------------------------
 # WordPress entrypoint.
 #
-# Runs as PID 1. Installs WordPress into the shared named volume on first run,
-# then `exec`s php-fpm so the daemon — not this shell — is PID 1.
+# Runs as PID 1. Brings the shared named volume to the desired state, then
+# `exec`s php-fpm so the daemon - not this shell - is PID 1.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -13,7 +13,11 @@ WP_PATH="/var/www/html"
 WP="wp --path=${WP_PATH} --allow-root"
 
 # --- Configuration ---------------------------------------------------------
-: "${MYSQL_HOST:?MYSQL_HOST is not set (check srcs/.env)}"
+# WP_DB_HOST is deliberately NOT called MYSQL_HOST. `env_file: .env` hands this
+# file to every service, and the MariaDB client treats MYSQL_HOST as its default
+# host. Inside the mariadb container that variable would turn a plain
+# `mariadb -u root -p` into a TCP connection, which root is not allowed to make.
+: "${WP_DB_HOST:?WP_DB_HOST is not set (check srcs/.env)}"
 : "${MYSQL_DATABASE:?MYSQL_DATABASE is not set}"
 : "${MYSQL_USER:?MYSQL_USER is not set}"
 : "${DOMAIN_NAME:?DOMAIN_NAME is not set}"
@@ -22,6 +26,7 @@ WP="wp --path=${WP_PATH} --allow-root"
 : "${WP_ADMIN_EMAIL:?WP_ADMIN_EMAIL is not set}"
 : "${WP_USER:?WP_USER is not set}"
 : "${WP_USER_EMAIL:?WP_USER_EMAIL is not set}"
+: "${MYSQL_PORT:=3306}"
 : "${WP_USER_ROLE:=author}"
 : "${WP_URL:=https://${DOMAIN_NAME}}"
 
@@ -29,9 +34,8 @@ WP="wp --path=${WP_PATH} --allow-root"
 DB_PASSWORD="$(cat /run/secrets/db_password)"
 
 # credentials.txt holds the two WordPress account passwords as KEY=value lines.
-# WHY parsed with grep/cut instead of `source`: `source` would execute the file
-# as shell code, so a stray backtick or $(...) in a password would run as a
-# command. Parsing keeps the file strictly data.
+# WHY grep/cut instead of `source`: `source` would execute the file as shell code,
+# so a stray backtick or $(...) in a password would run as a command.
 read_credential() {
     local key="$1" value
     value="$(grep -m1 -E "^${key}=" /run/secrets/credentials | cut -d= -f2-)"
@@ -43,75 +47,72 @@ WP_USER_PASSWORD="$(read_credential WP_USER_PASSWORD)"
 
 # --- Guard: the admin username rule ----------------------------------------
 # Subject: "The administrator's username can't contain admin/Admin or
-# administrator/Administrator". Failing loudly at startup is far better than
-# discovering it during the defence.
-if printf '%s' "${WP_ADMIN_USER}" | grep -qiE 'admin'; then
-    log "FATAL: WP_ADMIN_USER='${WP_ADMIN_USER}' contains 'admin' — forbidden by the subject"
+# administrator/Administrator". Fail loudly at startup, not during the defence.
+if printf '%s' "${WP_ADMIN_USER}" | grep -qi 'admin'; then
+    log "FATAL: WP_ADMIN_USER='${WP_ADMIN_USER}' contains 'admin' - forbidden by the subject"
     exit 1
 fi
 
-# php-fpm's runtime dir lives on a tmpfs and is empty on every container start.
-mkdir -p /run/php
-
 # --- Wait for MariaDB ------------------------------------------------------
-# WHY this loop exists even though compose has `depends_on: mariadb`:
-# depends_on only orders *container start*, not *service readiness*. The mariadb
-# container is "started" the instant its entrypoint runs — but on a fresh volume
-# that entrypoint still has ~10s of mysql_install_db ahead of it. Without this
-# wait, `wp config create` would fail on connection refused and the container
-# would crash-loop.
+# compose already waits for mariadb to be healthy, but only during `up`. When the
+# Docker daemon restarts this container after a crash, compose is not involved,
+# so the wait has to live here as well.
 #
-# It is a bounded retry, not a keep-alive loop: 60 tries then a hard failure.
-# The ceiling is generous on purpose: on a cold volume MariaDB has to run
-# mysql_install_db before it will answer, which takes ~30-40s on a laptop VM.
+# It is a bounded retry, not a keep-alive loop: it ends with success or a failure.
+# It runs a real authenticated query, so it also proves that the user and the
+# grants exist. MYSQL_PWD keeps the password out of `ps`, unlike -p<password>.
 DB_WAIT_SECONDS=120
-log "waiting for MariaDB at ${MYSQL_HOST}:3306 (up to ${DB_WAIT_SECONDS}s)"
+log "waiting for MariaDB at ${WP_DB_HOST}:${MYSQL_PORT} (up to ${DB_WAIT_SECONDS}s)"
 for i in $(seq 1 "${DB_WAIT_SECONDS}"); do
-    # A real authenticated query, not just a TCP connect: the port opens well
-    # before the grants exist, so `nc -z` style checks report ready too early.
-    if mariadb -h "${MYSQL_HOST}" -u "${MYSQL_USER}" -p"${DB_PASSWORD}" \
-               -e 'SELECT 1' "${MYSQL_DATABASE}" >/dev/null 2>&1; then
+    if MYSQL_PWD="${DB_PASSWORD}" mariadb -h "${WP_DB_HOST}" -P "${MYSQL_PORT}" \
+            -u "${MYSQL_USER}" -e 'SELECT 1' "${MYSQL_DATABASE}" >/dev/null 2>&1; then
         log "MariaDB is accepting authenticated queries"
         break
     fi
-    [ $(( i % 15 )) -eq 0 ] && log "still waiting... (${i}s)"
-    [ "$i" -eq "${DB_WAIT_SECONDS}" ] && { log "FATAL: MariaDB unreachable after ${DB_WAIT_SECONDS}s"; exit 1; }
+    if [ "$i" -eq "${DB_WAIT_SECONDS}" ]; then
+        log "FATAL: cannot log in to MariaDB after ${DB_WAIT_SECONDS}s"
+        log "If secrets/ was regenerated, the data directory still holds the OLD passwords: run 'make fclean'"
+        exit 1
+    fi
     sleep 1
 done
 
-# --- First-run installation ------------------------------------------------
-# wp-config.php is the marker: it only exists after a successful install, and it
-# lives on the named volume, so this whole block runs exactly once per volume.
-if [ -f "${WP_PATH}/wp-config.php" ]; then
-    log "wp-config.php present — WordPress already installed, skipping setup"
-else
-    log "installing WordPress into ${WP_PATH}"
+# --- Installation ----------------------------------------------------------
+# Every step checks its own result instead of sharing one marker. A crash between
+# two steps is therefore safe: the restart policy runs this script again and it
+# continues exactly where it stopped.
 
-    # WHY the core files are downloaded at RUNTIME and not baked into the image:
-    # /var/www/html is a mount point for the wordpress-data named volume. Docker
-    # mounts the volume OVER that directory, so anything the Dockerfile put there
-    # would be hidden the moment the container starts. The files have to be
-    # written after the mount exists — i.e. here.
-    $WP core download --version=6.4.3
+# WHY at runtime and not in the Dockerfile: Docker seeds an empty volume from the
+# image only once, so a rebuilt image could never update a volume that already
+# has files. WP-CLI owns the volume's contents instead.
+if [ ! -f "${WP_PATH}/wp-load.php" ]; then
+    log "downloading WordPress"
+    $WP core download --version=6.4.3 --force
+fi
 
-    # Writes wp-config.php with the DB credentials. The password is passed via
-    # --dbpass, which never touches the Dockerfile or the .env file.
+if [ ! -f "${WP_PATH}/wp-config.php" ]; then
+    log "creating wp-config.php"
     $WP config create \
         --dbname="${MYSQL_DATABASE}" \
         --dbuser="${MYSQL_USER}" \
         --dbpass="${DB_PASSWORD}" \
-        --dbhost="${MYSQL_HOST}" \
+        --dbhost="${WP_DB_HOST}:${MYSQL_PORT}" \
         --skip-check
+fi
 
-    # TLS terminates at NGINX, so PHP sees a plain HTTP request. Pinning
-    # WP_HOME/WP_SITEURL to the https:// URL stops WordPress from generating
-    # http:// links (which browsers block as mixed content on an https page).
-    $WP config set WP_HOME    "${WP_URL}"
-    $WP config set WP_SITEURL "${WP_URL}"
+# wp-config.php lives on the volume, so without this a changed port in .env would
+# never reach an installed site. Re-applying on every start makes a configuration
+# change take effect on the next `make`.
+#
+# Pinning the https:// URL also stops WordPress from generating http:// URLs:
+# TLS terminates at NGINX, so PHP itself only ever sees FastCGI.
+$WP config set DB_HOST    "${WP_DB_HOST}:${MYSQL_PORT}" --quiet
+$WP config set WP_HOME    "${WP_URL}" --quiet
+$WP config set WP_SITEURL "${WP_URL}" --quiet
 
-    # Creates the tables and the administrator account.
-    # --skip-email: there is no MTA in this container; without it the install
-    # blocks trying to send the welcome mail.
+if ! $WP core is-installed; then
+    log "installing WordPress"
+    # --skip-email: there is no mail server in this container.
     $WP core install \
         --url="${WP_URL}" \
         --title="${WP_TITLE}" \
@@ -119,24 +120,26 @@ else
         --admin_password="${WP_ADMIN_PASSWORD}" \
         --admin_email="${WP_ADMIN_EMAIL}" \
         --skip-email
-
-    # Subject: "there must be two users, one of them being the administrator."
-    $WP user create "${WP_USER}" "${WP_USER_EMAIL}" \
-        --role="${WP_USER_ROLE}" \
-        --user_pass="${WP_USER_PASSWORD}"
-
-    log "WordPress installed — admin='${WP_ADMIN_USER}', second user='${WP_USER}'"
+    # Publish comments of logged-in users immediately instead of holding them
+    # for moderation, so a new comment is visible on the site right away.
+    $WP option update comment_previously_approved 0 --quiet
 fi
 
-# WP-CLI ran as root (--allow-root), so fresh files are root-owned. The FPM
-# workers run as www-data and must be able to write uploads, themes and updates.
+# Subject: "there must be two users, one of them being the administrator."
+if ! $WP user get "${WP_USER}" --field=ID >/dev/null 2>&1; then
+    log "creating user '${WP_USER}'"
+    $WP user create "${WP_USER}" "${WP_USER_EMAIL}" \
+        --role="${WP_USER_ROLE}" \
+        --user_pass="${WP_USER_PASSWORD}" --quiet
+fi
+
+# WP-CLI ran as root, so new files are root-owned. The FPM workers run as www-data
+# and must be able to write uploads, themes and updates.
 chown -R www-data:www-data "${WP_PATH}"
 
 # --- Hand over to the daemon -----------------------------------------------
-# --nodaemonize : stay in the foreground. The default is to fork and detach,
-#                 which would make PID 1 exit and kill the container instantly.
-#                 This is the correct alternative to `tail -f` hacks.
-# --force-stderr: send the master's log to stderr so `docker compose logs`
-#                 shows it instead of it disappearing into a file.
+# --nodaemonize : stay in the foreground. The default is to fork and detach, which
+#                 would make PID 1 exit and stop the container immediately.
+# --force-stderr: send the master's log to stderr, where `docker logs` sees it.
 log "starting php-fpm 8.2 as PID 1"
 exec /usr/sbin/php-fpm8.2 --nodaemonize --force-stderr

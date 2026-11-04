@@ -21,8 +21,8 @@ services:
       context: requirements/mariadb
       dockerfile: Dockerfile
     # Subject: "Each Docker image must have the same name as its corresponding
-    # service." The `:inception` tag is explicit because `latest` is prohibited
-    # and an untagged name defaults to exactly that.
+    # service." The `:inception` tag is explicit because an untagged name would
+    # default to the tag the subject prohibits.
     image: mariadb:inception
     container_name: mariadb
     env_file: .env
@@ -34,14 +34,21 @@ services:
     networks:
       - inception-network
     # Subject: "Your containers have to restart in case of a crash."
-    # on-failure restarts only on a non-zero exit — a crash. `always` would also
-    # restart a container the operator stopped on purpose, which fights `docker
-    # compose stop` during a demo.
-    restart: on-failure
-    # expose = documentation + intra-network reachability. `ports:` would open a
-    # hole in the host firewall; the DB must never be reachable from outside.
+    # unless-stopped restarts after ANY unexpected exit but respects a deliberate
+    # `docker stop`. on-failure would miss a daemon that exits with code 0: a
+    # long-running service that ended is an outage whatever its exit code says.
+    restart: unless-stopped
+    # expose = documentation only. `ports:` would publish the port on the host;
+    # the DB must never be reachable from outside.
     expose:
       - "3306"
+    # `mariadb-admin ping` answers only once the real server is up. init.sh has
+    # finished all its SQL by then, so "healthy" means ready for WordPress.
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "--silent"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
 
   # -------------------------------------------------------------------------
   # Application tier. Speaks FastCGI only — no web server in this container.
@@ -60,14 +67,22 @@ services:
       - wordpress-data:/var/www/html
     networks:
       - inception-network
-    # depends_on orders CONTAINER START only — it does not wait for mysqld to
-    # accept queries. The real readiness gate is the bounded retry loop in
-    # tools/setup.sh. Both are needed: this for ordering, that for readiness.
+    # A bare depends_on only orders CONTAINER START. service_healthy makes
+    # compose wait until the healthcheck above passes.
     depends_on:
-      - mariadb
-    restart: on-failure
+      mariadb:
+        condition: service_healthy
+    restart: unless-stopped
     expose:
       - "9000"
+    # setup.sh ends with `exec php-fpm`, so PID 1 becomes php-fpm only after the
+    # whole installation has finished. This also means a port change does not
+    # require touching the healthcheck.
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q php-fpm /proc/1/comm"]
+      interval: 3s
+      timeout: 3s
+      retries: 100
 
   # -------------------------------------------------------------------------
   # Edge tier. The ONLY service with `ports:` — the single entry point.
@@ -87,12 +102,20 @@ services:
     networks:
       - inception-network
     depends_on:
-      - wordpress
-    restart: on-failure
+      wordpress:
+        condition: service_healthy
+    restart: unless-stopped
     ports:
       # host:container. 443 only — no 80, no redirect. Subject: "the only entry
       # point into your infrastructure via the port 443 only".
       - "443:443"
+    # Same idea: PID 1 becomes nginx only after the certificate and the config
+    # are ready and `nginx -t` has passed.
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q nginx /proc/1/comm"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
 # ---------------------------------------------------------------------------
 # Secrets. Subject: "It is strongly recommended that you use Docker secrets to
@@ -135,7 +158,7 @@ secrets:
 # `docker volume ls`. That is what the subject forbids.
 #
 # type: none + o: bind means "do not create a filesystem, bind this existing
-# directory" — so the directory must already exist. `make setup` creates it.
+# directory" — so the directory must already exist. `make` creates it.
 # ---------------------------------------------------------------------------
 volumes:
   mariadb-data:
@@ -154,13 +177,12 @@ volumes:
 
 # ---------------------------------------------------------------------------
 # Network. Subject: "The network line must be present in your
-# docker-compose.yml file", and `network: host`, `--link` and `links:` are
-# forbidden.
+# docker-compose.yml file".
 #
 # A user-defined bridge (unlike the default docker0 bridge) gives every attached
 # container an entry in Docker's embedded DNS server at 127.0.0.11. That is why
-# `fastcgi_pass wordpress:9000` and `MYSQL_HOST=mariadb` work without `links:`
-# and without knowing any IP address.
+# `fastcgi_pass wordpress:9000` and `WP_DB_HOST=mariadb` work without knowing any
+# IP address.
 #
 # It also provides the isolation the design relies on: only containers attached
 # to inception-network can reach 3306 and 9000 at all.

@@ -47,7 +47,7 @@ Every service follows the same three-part shape — `Dockerfile`, `conf/`,
 ### Configuration files
 
 ```bash
-cp srcs/.env.example srcs/.env
+make init       # srcs/.env from the template + random secrets; never overwrites
 ```
 
 `srcs/.env` holds **only non-confidential** values, and is read by all three
@@ -56,24 +56,22 @@ services through `env_file:`.
 | Variable | Meaning |
 |---|---|
 | `DOMAIN_NAME` | must be `<login>.42.fr`; used for `server_name` and the certificate CN |
-| `MYSQL_HOST` | the compose **service name** `mariadb`, resolved by Docker's DNS |
+| `WP_DB_HOST` | the compose **service name** `mariadb`, resolved by Docker's DNS. Not called `MYSQL_HOST` on purpose, see §5 |
 | `MYSQL_DATABASE`, `MYSQL_USER` | database and application user created on first run |
+| `MYSQL_PORT` | the port WordPress uses to reach MariaDB; must match `port` in `mariadb.cnf` |
 | `WP_TITLE`, `WP_URL` | site title, and the canonical `https://` URL pinned into `wp-config.php` |
 | `WP_ADMIN_USER`, `WP_ADMIN_EMAIL` | the administrator. **The name must not contain `admin`/`administrator`** — `tools/setup.sh` refuses to start otherwise |
 | `WP_USER`, `WP_USER_EMAIL`, `WP_USER_ROLE` | the second, non-administrator account the subject requires |
 
 ### Secrets
 
-Three files, never committed, created once per machine:
+Three files, never committed, created once per machine by `make init`. It writes
+hex passwords, because a `'` in a database password would break the SQL in
+`init.sh`.
 
-```bash
-mkdir -p secrets
-openssl rand -base64 24 > secrets/db_root_password.txt
-openssl rand -base64 24 > secrets/db_password.txt
-printf 'WP_ADMIN_PASSWORD=%s\nWP_USER_PASSWORD=%s\n' \
-    "$(openssl rand -base64 18)" "$(openssl rand -base64 18)" > secrets/credentials.txt
-chmod 600 secrets/*.txt
-```
+Do not regenerate them over existing data: the database and `wp-config.php` keep
+the old passwords, and WordPress can no longer log in. Either restore the old
+files or run `make fclean`.
 
 `credentials.txt` is parsed as `KEY=value` lines — the format matters:
 
@@ -113,40 +111,43 @@ echo "127.0.0.1 akuzmin.42.fr" | sudo tee -a /etc/hosts
 make
 ```
 
-`make` runs `check` → `setup` → `docker compose up --build -d`:
+`make` runs `check` → `setup` → `docker compose up --build -d --wait`:
 
 - **check** — fails early with a readable message if `.env` or a secret is
   missing, instead of a cryptic Compose error.
 - **setup** — `mkdir -p /home/akuzmin/data/{mariadb,wordpress}`. Required: the
   volumes use `type: none, o: bind`, which binds an *existing* directory. Docker
   will not create it, and `up` fails with "no such file or directory" without it.
-- **up --build -d** — build images, create network and volumes, start containers.
+- **up --build -d --wait** — build images, create network and volumes, start the
+  containers in dependency order, and return only when all of them are healthy.
 
 | Target | Effect |
 |---|---|
-| `make` / `all` | check, setup, build, start |
+| `make init` | create `srcs/.env` and missing secrets |
+| `make` / `all` | check, setup, build, start, wait for healthy |
 | `make build` | build images only |
 | `make up` / `down` | start / stop+remove containers **keeping volumes** |
 | `make clean` | `down` plus remove the locally built images |
-| `make fclean` | `clean` plus `down -v` and `rm -rf /home/akuzmin/data/*` |
+| `make fclean` | `clean` plus `down -v` and `sudo rm -rf` of the data directories |
 | `make re` | `fclean` then `all` — the real from-scratch test |
 | `make logs` / `ps` | follow logs / show state |
-| `make tls-test` | assert TLS 1.0/1.1 refused, 1.2/1.3 accepted |
+| `make tls-test` | show TLS 1.0/1.1 refused by the server, 1.2/1.3 accepted |
 
 ### What happens on first start
 
 ```
-mariadb    volume empty -> mysql_install_db, create DB + user + grants,
+mariadb    volume empty -> mysql_install_db, mysqld --bootstrap (DB + user + grants),
                            write .inception-initialised, exec mysqld
 wordpress  wait for an authenticated query to succeed (up to 120s),
-           wp core download / config create / core install / user create,
-           exec php-fpm --nodaemonize
+           wp core download / config create / config set / core install / user create,
+           each step only if not done yet, exec php-fpm --nodaemonize
 nginx      envsubst the config, generate a self-signed cert,
            nginx -t, exec nginx -g "daemon off;"
 ```
 
 Each entrypoint ends in `exec`, so the daemon itself is PID 1 — the process
-Docker signals on stop. Check it:
+Docker signals on stop. The WordPress and NGINX healthchecks use this: they pass
+when PID 1 has become the daemon, which means setup has finished. Check it:
 
 ```bash
 for c in mariadb wordpress nginx; do docker exec $c cat /proc/1/comm; done
@@ -168,9 +169,8 @@ docker compose -f srcs/docker-compose.yml up -d --build --no-deps wordpress   # 
 Useful service-specific commands:
 
 ```bash
-# MariaDB — note --protocol=socket, see §5
-docker exec -it mariadb mariadb --protocol=socket -u root \
-    -p"$(cat secrets/db_root_password.txt)"
+# MariaDB - prompts for secrets/db_root_password.txt
+docker exec -it mariadb mariadb -u root -p
 
 # WordPress
 docker exec wordpress wp --path=/var/www/html --allow-root user list
@@ -221,23 +221,26 @@ The entrypoints are idempotent, which is what makes restarts safe:
 - MariaDB writes `/var/lib/mysql/.inception-initialised` only after the *last*
   SQL statement succeeds, so a run that fails halfway is retried rather than
   mistaken for a finished one.
-- WordPress checks for `wp-config.php`, which exists only after a successful
-  install.
+- WordPress has no shared marker: each step (`core download`, `config create`,
+  `core install`, `user create`) checks its own result, so a run interrupted at any
+  point continues where it stopped.
+- `DB_HOST`, `WP_HOME` and `WP_SITEURL` are re-applied on every start, because
+  `wp-config.php` lives on the volume and would otherwise keep old values.
 
 Verify persistence honestly — create data, cycle, confirm:
 
 ```bash
 docker exec wordpress wp --path=/var/www/html --allow-root \
     post create --post_title="probe" --post_status=publish
-make down && make && sleep 30
+make down && make
 docker exec wordpress wp --path=/var/www/html --allow-root post list
 ```
 
 ### Backup / restore
 
 ```bash
-docker exec mariadb mariadb-dump --protocol=socket -u root \
-    -p"$(cat secrets/db_root_password.txt)" wordpress > backup.sql
+docker exec -e MYSQL_PWD="$(cat secrets/db_root_password.txt)" mariadb \
+    mariadb-dump -u root wordpress > backup.sql
 tar czf wp-files.tar.gz -C /home/akuzmin/data/wordpress .
 ```
 
@@ -245,7 +248,7 @@ tar czf wp-files.tar.gz -C /home/akuzmin/data/wordpress .
 
 ## 5. Notes for whoever works on this next
 
-Three defects were hit while building this, all silent enough to be worth
+Four defects were hit while building this, all silent enough to be worth
 writing down.
 
 **MariaDB's Debian package pre-seeds the data directory.** `apt-get install
@@ -255,13 +258,16 @@ image, so the "empty" volume came up already containing `mysql/` — first-run
 setup was skipped and the WordPress user was never created. The Dockerfile now
 empties that directory, so a fresh volume is genuinely empty.
 
-**`MYSQL_HOST` hijacks the local MariaDB client.** `.env` sets
-`MYSQL_HOST=mariadb` for WordPress, and `env_file:` hands it to *every* service.
-The client libraries read `MYSQL_HOST` as their default host, which forces TCP —
-and `--protocol=socket` does **not** override it. Against the `--skip-networking`
-temporary instance this fails with `ERROR 2002 … Can't connect to server on
-'mariadb' (115)`. `init.sh` therefore `unset MYSQL_HOST` before any local client
-call.
+**`MYSQL_HOST` hijacks the MariaDB client.** `env_file:` hands `.env` to *every*
+service, and the client libraries read `MYSQL_HOST` as their default host, which
+forces TCP. With that variable set, `mariadb -u root -p` inside the mariadb container
+fails with `Access denied for user 'root'@'172.x.x.x'`, because root may only
+connect locally. `--protocol=socket` does **not** override it. So the variable is
+named `WP_DB_HOST`, which the client does not read.
+
+**`HTTP_HOST` loses its port.** Debian's `fastcgi_params` passes `HTTP_HOST` as
+`$host`. On a non-default port WordPress then sees a URL different from `WP_HOME`
+and redirects to itself forever. `nginx.conf.template` sets it to `$http_host`.
 
 **`http2 on;` needs nginx ≥ 1.25.1.** Bookworm ships 1.22, where HTTP/2 is a
 `listen` parameter; the standalone directive makes nginx refuse to start with
@@ -277,15 +283,18 @@ call.
   `while true` to keep a container alive — a foreground daemon already does.
 - Readiness waits must be *bounded* and must test a real authenticated query;
   `depends_on` only orders container start, not service readiness.
-- Secrets are files, `.env` is configuration. Nothing confidential in a
-  Dockerfile, in `ENV`, or on a command line visible in `ps`.
+- No process in the background in an entrypoint, and no `tail -f`-style tricks.
+- Secrets are files, `.env` is configuration. Nothing confidential in a Dockerfile
+  or in `ENV`. WP-CLI takes passwords as arguments, so they are visible in `ps`
+  inside the container for the duration of those setup commands; only root runs
+  there at that point.
 
 ### Adding a service
 
 1. `srcs/requirements/<name>/` with `Dockerfile`, `conf/`, `tools/`.
 2. Add it to `docker-compose.yml`: `image: <name>:inception` (name matches the
    service, tag is never `latest`), `env_file`, `networks: [inception-network]`,
-   `restart: on-failure`, and `expose:` rather than `ports:` unless it genuinely
+   `restart: unless-stopped`, and `expose:` rather than `ports:` unless it genuinely
    must be reachable from the host.
 3. Give it its own volume if it needs persistence — never share another
    service's data volume read-write.
@@ -297,3 +306,19 @@ git ls-files | grep -E 'secrets/|srcs/\.env$'   # must be empty
 make re                                          # must build and run from zero
 make tls-test                                    # 1.0/1.1 refused, 1.2/1.3 accepted
 ```
+
+## 6. Changing a port
+
+Tested procedures. Each ends with `make`, which rebuilds what changed and restarts
+it. `.env` values and files on the volume are picked up on the next start.
+
+| Change | Edit |
+|---|---|
+| NGINX, public port only (`8443`) | `docker-compose.yml`: `"8443:443"`; `.env`: `WP_URL=https://akuzmin.42.fr:8443` |
+| NGINX, inside the container too | the above with `"8443:8443"`, plus `listen 8443` in `nginx.conf.template` and `EXPOSE` in its Dockerfile |
+| PHP-FPM (`9001`) | `www.conf`: `listen`; `nginx.conf.template`: `fastcgi_pass`; `expose:` in compose and `EXPOSE` in the Dockerfile |
+| MariaDB (`3307`) | `mariadb.cnf`: `port`; `.env`: `MYSQL_PORT`; `expose:` in compose and `EXPOSE` in the Dockerfile |
+
+`EXPOSE` is documentation, so forgetting it does not break anything: `docker ps`
+just lists both ports. On a public port other than 443, `make tls-test` needs the
+port adjusted too.

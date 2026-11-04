@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks the mandatory forbidden-pattern rules from materials-inception/inception-subject.pdf.
+# Checks the mandatory forbidden-pattern rules from materials-inception/sources/subject.pdf.
 # Exit 0 = no FAILs. Exit 1 = at least one FAIL. WARN never fails the build.
 
 set -u
@@ -38,6 +38,14 @@ if [ -f "$PROJECT_DIR/Makefile" ]; then
 else
   warn "Makefile missing at Inception/Makefile (not created yet)"
 fi
+
+for doc in README.md USER_DOC.md DEV_DOC.md; do
+  if [ -s "$PROJECT_DIR/$doc" ]; then
+    pass "$doc exists and is not empty"
+  else
+    fail "$doc missing or empty (evaluation stops here)"
+  fi
+done
 
 if [ -f "$COMPOSE" ]; then
   pass "docker-compose.yml exists"
@@ -101,6 +109,13 @@ for svc in $MANDATORY_SERVICES; do
         fail "$svc: forbidden hacky pattern in $(basename "$sh")"
       else
         pass "$svc: no forbidden pattern in $(basename "$sh")"
+      fi
+      # Evaluation scale: "ensure it runs no program in background". A trailing `&`
+      # outside a comment is what that looks like; `&&` is a normal AND-list.
+      if strip_comments "$sh" | grep -qE '(^|[^&])&[[:space:]]*$'; then
+        fail "$svc: background process (&) in $(basename "$sh")"
+      else
+        pass "$svc: no background process in $(basename "$sh")"
       fi
     done < <(find "$scripts_dir" -maxdepth 1 -name '*.sh' -print0)
   fi

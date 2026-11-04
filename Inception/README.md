@@ -48,21 +48,13 @@ Ports 3306 and 9000 are `expose`d, never published: they exist only on
 Requires a Linux host (or VM) with Docker Engine and the Compose v2 plugin.
 
 ```bash
-# 1. configuration
-cp srcs/.env.example srcs/.env      # edit DOMAIN_NAME and the WordPress names
+# 1. create srcs/.env and random secrets (never committed - see DEV_DOC.md)
+make init
 
-# 2. secrets (never committed — see DEV_DOC.md)
-mkdir -p secrets
-openssl rand -base64 24 > secrets/db_root_password.txt
-openssl rand -base64 24 > secrets/db_password.txt
-printf 'WP_ADMIN_PASSWORD=%s\nWP_USER_PASSWORD=%s\n' \
-    "$(openssl rand -base64 18)" "$(openssl rand -base64 18)" > secrets/credentials.txt
-chmod 600 secrets/*.txt
-
-# 3. domain resolution
+# 2. domain resolution
 echo "127.0.0.1 akuzmin.42.fr" | sudo tee -a /etc/hosts
 
-# 4. build and start everything
+# 3. build and start everything; returns when the site is ready
 make
 ```
 
@@ -71,10 +63,11 @@ browser shows a warning — that is expected (see "Technical choices").
 
 | Command | Effect |
 |---|---|
-| `make` | build images and start the stack |
+| `make init` | create `srcs/.env` and any missing secret; never overwrites |
+| `make` | build images and start the stack, wait until it is healthy |
 | `make down` | stop and remove containers; **data survives** |
 | `make clean` | the above, plus remove the locally built images |
-| `make fclean` | the above, plus delete the volumes and `/home/akuzmin/data` |
+| `make fclean` | the above, plus delete the volumes and their data (asks for `sudo`) |
 | `make re` | `fclean` then `make` — a true from-scratch rebuild |
 | `make logs` / `make ps` | follow logs / show container state |
 | `make tls-test` | prove TLS 1.0/1.1 are refused and 1.2/1.3 accepted |
@@ -114,13 +107,20 @@ also why none of these containers needs `tail -f`, `sleep infinity` or
 - **The WordPress volume is mounted read-only in NGINX.** NGINX never needs to
   write, and a compromised NGINX then cannot drop a `.php` file for FPM to run.
 - **WordPress is installed at runtime by WP-CLI, not baked into the image.**
-  `/var/www/html` is a volume mount point: anything the image put there is
-  hidden the moment the volume is mounted over it.
+  Docker seeds an empty volume from the image only once, so a rebuilt image could
+  never update a volume that already has files. Each install step checks its own
+  result, so a run interrupted halfway simply continues on restart.
+- **MariaDB is initialised with `mysqld --bootstrap`.** It runs the SQL in the
+  foreground and exits, with no background process and no open port while root
+  still has no password.
 - **The certificate is generated on start-up, not committed.** `akuzmin.42.fr`
   resolves through `/etc/hosts`, so no public CA could ever sign it, and a
   private key in git is a leaked credential.
-- **`restart: on-failure`, not `always`.** It restarts a crash but respects a
-  deliberate `docker compose stop`.
+- **`restart: unless-stopped`.** It restarts after any unexpected exit but respects
+  a deliberate `docker stop`. `on-failure` would miss a daemon that ended with
+  exit code 0, and for a long-running service that is an outage as well.
+- **Healthchecks with `condition: service_healthy`.** A bare `depends_on` only
+  orders container start. With healthchecks, `make` returns when the site answers.
 
 ### Virtual Machines vs Docker
 
@@ -173,7 +173,7 @@ this project depends on:
 
 1. **Embedded DNS.** Docker runs a resolver at `127.0.0.11` that resolves
    *service names*. This is why `fastcgi_pass wordpress:9000` and
-   `MYSQL_HOST=mariadb` work without knowing an IP and without the obsolete,
+   `WP_DB_HOST=mariadb` work without knowing an IP and without the obsolete,
    forbidden `links:`.
 2. **A real boundary.** Only what is listed under `ports:` reaches the host. 3306
    and 9000 are `expose`d and therefore unreachable from outside the network.
@@ -211,13 +211,13 @@ volumes:
 Written instead as `- /home/akuzmin/data/mariadb:/var/lib/mysql` under a service,
 it would be a plain bind mount — no volume object, invisible to `docker volume
 ls` — which is what the subject forbids. Because `o: bind` binds an *existing*
-directory, `make setup` creates it before `up`.
+directory, `make` creates it before `up`.
 
 ## Resources
 
 Documentation and references used:
 
-- Inception subject v5.3 — `materials-inception/inception-subject.pdf`
+- Inception subject v5.3 (42 intranet)
 - Docker docs — [Dockerfile reference](https://docs.docker.com/reference/dockerfile/),
   [Compose file reference](https://docs.docker.com/reference/compose-file/),
   [networking](https://docs.docker.com/engine/network/),
@@ -235,21 +235,18 @@ Documentation and references used:
 
 AI (Claude) was used on this project for:
 
-- **Reviewing and explaining**, not authoring blind: producing the annotated
-  rationale in `materials-inception/solutions/core-explained.md`, and the
-  self-assessment material in `materials-inception/eval/`.
-- **Debugging**, by reading logs and forming hypotheses. Three defects in this
-  code were found this way and are documented in the rationale file: the
-  `mariadb-server` package pre-seeding `/var/lib/mysql` inside the image (which
-  made Docker seed the "empty" volume and caused first-run setup to be skipped);
-  `MYSQL_HOST` from `.env` hijacking the local MariaDB client's transport so
-  `--protocol=socket` was ignored; and `http2 on;` being invalid on the nginx
-  1.22 that bookworm ships.
-- **Not** used to generate configuration that was then accepted untested. Every
-  claim in these documents was checked against a running stack — TLS version
-  enforcement with `openssl s_client`, PID 1 with `/proc/1/comm`, persistence by
-  creating a post and cycling `down`/`up`, and port isolation from the host.
+- **Writing and reviewing** Dockerfiles, configuration and entrypoint scripts,
+  and drafting this documentation.
+- **Auditing** the project against the subject and the evaluation scale, on a
+  throwaway test environment. This found, for example, the background `mysqld`
+  in the MariaDB entrypoint (now `--bootstrap`) and a redirect loop on non-default
+  ports caused by `HTTP_HOST` losing its port.
+- **Debugging**, by reading logs and forming hypotheses: the `mariadb-server`
+  package pre-seeding `/var/lib/mysql` in the image, and `http2 on;` being invalid
+  on the nginx 1.22 that bookworm ships.
+- **Study material**: explanations and self-assessment questions used to learn the
+  topics in this project.
 
-The learning material in `materials-inception/` was written with AI assistance as
-a study aid; the verification checklists there are designed to be run by hand,
-without AI, precisely so understanding can be tested independently.
+AI output was tested on a running stack and reviewed before being kept: TLS with
+`openssl s_client`, PID 1 with `/proc/1/comm`, persistence across a restart, and
+port isolation from the host.

@@ -1,6 +1,6 @@
 # tests/
 
-Not unit tests — a linter for the forbidden-pattern rules in `materials-inception/inception-subject.pdf`. Nothing here runs containers; it only greps Dockerfiles, `docker-compose.yml`, and git-tracked files.
+Not unit tests — a linter for the forbidden-pattern rules in `materials-inception/sources/subject.pdf`. Nothing here runs containers; it only greps Dockerfiles, `docker-compose.yml`, and git-tracked files.
 
 ## Run locally
 
@@ -12,9 +12,10 @@ Exit code `0` = no FAIL (WARN is fine — usually means "not written yet"). Exit
 
 ## What it checks
 
-- Required files exist: `Makefile`, `docker-compose.yml`, one `Dockerfile` per mandatory service
+- Required files exist: `Makefile`, `README.md`, `USER_DOC.md`, `DEV_DOC.md`, `docker-compose.yml`, one `Dockerfile` per mandatory service
 - `FROM` is `alpine:` or `debian:` with an explicit non-`latest` tag
 - No `tail -f`, `sleep infinity`, `while true`/`while :`, or bare `bash`/`sh` as CMD/ENTRYPOINT — in Dockerfiles and in `tools/*.sh`
+- No process started in the background (`&`) in `tools/*.sh`
 - No hardcoded `PASSWORD=`/`PASSWD=` literal in a Dockerfile
 - No `network: host` / `network_mode: host`, no `links:` / `--link`
 - Top-level `networks:` present (mandatory), `secrets:` present (recommended, warn-only)

@@ -64,9 +64,6 @@ else
     chmod 644 "${CERT}"
 fi
 
-# /run is a tmpfs, empty on every container start — nginx needs its pid dir.
-mkdir -p /run/nginx
-
 # Fail fast on a bad config: `nginx -t` parses and validates without binding
 # any port. Better a clear syntax error in the logs than a crash-loop.
 log "validating configuration"
@@ -76,6 +73,6 @@ nginx -t
 # `daemon off;` keeps the master process in the foreground so it stays PID 1
 # and receives SIGTERM/SIGQUIT from `docker stop` for a graceful shutdown.
 # Without it nginx would fork, detach, and PID 1 would exit — killing the
-# container. This is the legitimate alternative to a `tail -f` hack.
+# container.
 log "starting nginx as PID 1"
 exec nginx -g "daemon off;"
