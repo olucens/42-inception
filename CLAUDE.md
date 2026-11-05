@@ -5,9 +5,9 @@ Project context for any session on any machine.
 ## Goal
 
 **42 School project: Inception (v5.3), mandatory part only.** The user (intra login `akuzmin`) must
-be able to understand, explain, rebuild and defend every part of it. Knowledge ready by 2026-11-09;
-the school VM is only available after 11-09, so the defense is on 11-10 or 11-11. **Bonus is out of
-scope** until Core has been defended. Old bonus notes: `git show 538da7a:materials-inception/learning-plan.md`.
+be able to understand, explain, rebuild and defend every part of it. The plan runs 2026-11-05 to 11-11,
+11-12 to 11-15 is a buffer, and the defense is on **2026-11-16**. The user works in a Debian VM (home and
+school) with Claude Code in VS Code. **Bonus is out of scope** until Core has been defended. Old bonus notes: `git show 538da7a:materials-inception/learning-plan.md`.
 
 ## Sources of truth, in priority order
 
@@ -35,8 +35,10 @@ Git-ignored and created per machine with `make init`: `Inception/srcs/.env`, `In
 - The user is here to LEARN. Explain WHY, let them try first, then review. Never fill in `my-work/`.
 - **"проверь блок X":** grade `my-work/answers.md` strictly with `answer-key.md`, 0-100% per question;
   pass is an average of 90% or more. Name exactly what is missing.
-- **"проверь лабу N":** read that section of `my-work/labs.md`, verify outputs against the lesson, then
-  ask follow-up questions about the "своими словами" answers.
+- **"проверь лабу N":** read that section of `my-work/labs.md`, verify outputs against the lesson, and in
+  the VM also confirm the state yourself with read-only commands (`docker ps`, `docker inspect`, `curl -k`).
+  Never print secrets, and do not run the lab or fix it for the user. Then ask follow-up questions about the
+  "своими словами" answers.
 - **"проведи защиту":** follow the scale, one question at a time, as a strict evaluator, no hints,
   debrief at the end.
 - **"сломай мне проект":** introduce one realistic fault in a scratch copy or branch without saying what

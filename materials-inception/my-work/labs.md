@@ -9,6 +9,7 @@
 ## Лаба 0. Среда
 
 - Вывод `docker compose version`:
+- Вывод `docker context show` и `docker info --format '{{.OperatingSystem}}'`:
 - Вывод `make ps`:
 - Сайт открылся в браузере VM, а не страница установки (да/нет):
 - Вход как `siteowner` работает (да/нет):

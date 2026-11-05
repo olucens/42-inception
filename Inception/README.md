@@ -48,7 +48,7 @@ Ports 3306 and 9000 are `expose`d, never published: they exist only on
 Requires a Linux host (or VM) with Docker Engine and the Compose v2 plugin.
 
 ```bash
-# 1. create srcs/.env and random secrets (never committed - see DEV_DOC.md)
+# 1. create srcs/.env and random secrets (never committed — see DEV_DOC.md)
 make init
 
 # 2. domain resolution
@@ -59,7 +59,7 @@ make
 ```
 
 Then open <https://akuzmin.42.fr>. The certificate is self-signed, so the
-browser shows a warning — that is expected (see "Technical choices").
+browser shows a warning — that is expected (see "Main design choices").
 
 | Command | Effect |
 |---|---|
@@ -120,7 +120,7 @@ also why none of these containers needs `tail -f`, `sleep infinity` or
   a deliberate `docker stop`. `on-failure` would miss a daemon that ended with
   exit code 0, and for a long-running service that is an outage as well.
 - **Healthchecks with `condition: service_healthy`.** A bare `depends_on` only
-  orders container start. With healthchecks, `make` returns when the site answers.
+  orders container start. With healthchecks and `up --wait`, `make` returns when the site answers.
 
 ### Virtual Machines vs Docker
 
@@ -142,7 +142,7 @@ on macOS or Windows are really running inside a hidden Linux VM.
 For this project, containers are the right tool: three services that must start
 fast, be rebuilt constantly, and be described entirely by files in git.
 
-### Secrets vs Environment variables
+### Secrets vs Environment Variables
 
 Environment variables are the standard way to configure a container, but they
 leak by design. `docker inspect <container>` prints them, `docker compose config`
@@ -153,7 +153,7 @@ an image layer that `docker history` can recover.
 A Docker secret is a file mounted read-only under `/run/secrets/<name>` — in
 Swarm on an in-memory tmpfs, in Compose as a read-only bind mount of a host file.
 It appears in none of those places. The file itself lives in `secrets/`, which is
-git-ignored; only a `.example` template is committed.
+git-ignored and created per machine by `make init`; nothing from it is committed.
 
 This project splits on exactly that line: `srcs/.env` holds non-confidential
 configuration (domain, database name, usernames), and every password lives in
@@ -175,8 +175,9 @@ this project depends on:
    *service names*. This is why `fastcgi_pass wordpress:9000` and
    `WP_DB_HOST=mariadb` work without knowing an IP and without the obsolete,
    forbidden `links:`.
-2. **A real boundary.** Only what is listed under `ports:` reaches the host. 3306
-   and 9000 are `expose`d and therefore unreachable from outside the network.
+2. **A real boundary.** Only what is listed under `ports:` is published on the
+   host's interfaces. 3306 and 9000 are only `expose`d, so other machines cannot
+   reach them.
 
 Host networking would destroy both properties and hand the database a publicly
 bound port.
@@ -188,8 +189,8 @@ storage that outlives it.
 
 A **bind mount** attaches an arbitrary host path into a container. It is not a
 Docker object: `docker volume ls` does not show it, `docker volume rm` cannot
-remove it, its ownership and SELinux labels come from the host, and it silently
-creates the path if missing. It is ideal for injecting source code during
+remove it, its ownership and SELinux labels come from the host, and the short
+syntax silently creates the path if missing. It is ideal for injecting source code during
 development, and a poor fit for production data.
 
 A **named volume** is a first-class Docker object with a name, a driver and a
@@ -235,8 +236,6 @@ Documentation and references used:
 
 AI (Claude) was used on this project for:
 
-- **Writing and reviewing** Dockerfiles, configuration and entrypoint scripts,
-  and drafting this documentation.
 - **Auditing** the project against the subject and the evaluation scale, on a
   throwaway test environment. This found, for example, the background `mysqld`
   in the MariaDB entrypoint (now `--bootstrap`) and a redirect loop on non-default
@@ -244,9 +243,7 @@ AI (Claude) was used on this project for:
 - **Debugging**, by reading logs and forming hypotheses: the `mariadb-server`
   package pre-seeding `/var/lib/mysql` in the image, and `http2 on;` being invalid
   on the nginx 1.22 that bookworm ships.
-- **Study material**: explanations and self-assessment questions used to learn the
-  topics in this project.
-
-AI output was tested on a running stack and reviewed before being kept: TLS with
-`openssl s_client`, PID 1 with `/proc/1/comm`, persistence across a restart, and
-port isolation from the host.
+- **Study material**: explanations, self-assessment questions and an AI-generated
+  reference version of the project, used only for learning. The submitted code is
+  my own.
+- **Documentation**: drafting and reviewing README, USER_DOC and DEV_DOC.
