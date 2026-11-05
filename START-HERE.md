@@ -19,6 +19,7 @@ START-HERE.md              этот файл: план и прогресс
 Inception/                 сам проект (его содержимое сдаётся на Intra)
 materials-inception/
   lessons/                 ГЛАВНОЕ: уроки 0–8, идут по порядку
+    terms.md               что такое ядро, OverlayFS и другие термины
   my-work/
     answers.md             только вопросы (60), ответы пишешь сюда сам
     labs.md                отчёты по практике пишешь здесь
@@ -65,7 +66,7 @@ VM. Новая сессия не помнит прошлую, но правил�
 | | № | День | Что делаем | Время | Проверка дня |
 |---|---|---|---|---|---|
 | [] | 1 | Чт 05.11 | [Урок 0](materials-inception/lessons/00-setup.md): домашняя VM, Docker, первый запуск | 2,5 ч | сайт открывается в браузере VM |
-| [] | 2 | Пт 06.11 | [Урок 1](materials-inception/lessons/01-containers.md): контейнеры. [Урок 2](materials-inception/lessons/02-images.md): образы | 3 ч | лабы 1–2 приняты, блоки A и B ≥ 90% |
+| [] | 2 | Пт 06.11 | [Термины](materials-inception/lessons/terms.md), части 1–3. [Урок 1](materials-inception/lessons/01-containers.md): контейнеры. [Урок 2](materials-inception/lessons/02-images.md): образы | 3 ч | лабы 1–2 приняты, блоки A и B ≥ 90% |
 | [] | 3 | Сб 07.11 | [Урок 3](materials-inception/lessons/03-pid1.md): PID 1. [Урок 4](materials-inception/lessons/04-network.md): сеть | 3 ч | лабы 3–4 приняты, блоки C и D ≥ 90% |
 | [] | 4 | Вс 08.11 | [Урок 5](materials-inception/lessons/05-storage.md): хранение. [Урок 6](materials-inception/lessons/06-compose-secrets.md): Compose и секреты | 2,5 ч | лабы 5–6 приняты, блоки E и F ≥ 90% |
 | [] | 5 | Пн 09.11 | [Урок 7](materials-inception/lessons/07-services.md): сервисы. Смена порта из [runbook §12](materials-inception/defense/runbook.md) | 3 ч | лаба 7 принята, блок G ≥ 90%, «сломай мне проект» решено |

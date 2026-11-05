@@ -21,7 +21,7 @@ school) with Claude Code in VS Code. **Bonus is out of scope** until Core has be
 
 ```
 Inception/                      submitted; its CONTENTS go to the root of the Intra repo
-materials-inception/lessons/    the course, lessons 0-8
+materials-inception/lessons/    the course, lessons 0-8, and terms.md (glossary)
 materials-inception/my-work/    the user's answers (answers.md) and lab reports (labs.md)
 materials-inception/answer-key.md   grading key for answers.md
 materials-inception/defense/    runbook.md (real scale, port drills, hard questions), commands.md
